@@ -1,0 +1,70 @@
+// Plaintext content of a GophKeeper record.
+//
+// Client-only format: the client marshals a Record, encrypts it with the data
+// key and sends only the ciphertext. The server never sees this message.
+edition = "2024";
+
+package gophkeeper.record.v1;
+
+option go_package = "github.com/AVZotov/gophkeeper/internal/client/recordpb";
+
+// Proto3 semantics: an unset scalar field equals its zero value. No presence
+// tracking is needed, and builders take plain values instead of pointers.
+option features.field_presence = IMPLICIT;
+
+// Record is the content of one record: common fields and the data of one of
+// the supported types.
+message Record {
+  // Name shown in record lists.
+  string name = 1;
+  // Free-form text metadata: website, bank, owner, one-time codes and so on.
+  string metadata = 2;
+
+  // Record data; exactly one type is set.
+  oneof data {
+    // Login and password pair.
+    Credentials credentials = 3;
+    // Arbitrary text.
+    Text text = 4;
+    // Arbitrary binary file.
+    File file = 5;
+    // Bank card.
+    Card card = 6;
+  }
+}
+
+// Credentials is a login and password pair.
+message Credentials {
+  // Login, user name or email.
+  string login = 1;
+  // Password.
+  string password = 2;
+}
+
+// Text is arbitrary text.
+message Text {
+  // Text content.
+  string content = 1;
+}
+
+// File is an arbitrary binary file.
+message File {
+  // Original file name, used when the file is saved back to disk.
+  string filename = 1;
+  // File content.
+  bytes content = 2;
+}
+
+// Card is bank card data.
+message Card {
+  // Card number as entered, digits only.
+  string number = 1;
+  // Cardholder name as printed on the card.
+  string holder = 2;
+  // Expiry month, 1-12.
+  int32 expiry_month = 3;
+  // Expiry year, four digits.
+  int32 expiry_year = 4;
+  // Card verification code.
+  string cvv = 5;
+}
