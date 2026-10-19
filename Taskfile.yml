@@ -1,0 +1,81 @@
+version: '3'
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty
+  BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z07:00" now "UTC"}}'
+  LDFLAGS: -X main.version={{.VERSION}} -X main.buildDate={{.BUILD_DATE}}
+  PROTOC_VERSION: libprotoc 36.2
+  PROTO_FILES: api/gophkeeper/v1/gophkeeper.proto internal/client/recordpb/record.proto
+
+tasks:
+  tools:
+    desc: Install the protoc plugins pinned in go.mod
+    cmds:
+      - go install tool
+
+  proto:
+    desc: Generate Go code from .proto files ({{.PROTOC_VERSION}} required)
+    deps: [tools]
+    vars:
+      # Plugins installed by the tools task, so protoc never picks up other
+      # versions from PATH.
+      GOBIN:
+        sh: b=$(go env GOBIN); echo "${b:-$(go env GOPATH)/bin}"
+    cmds:
+      - cmd: |
+          got=$(protoc --version)
+          if [ "$got" != "{{.PROTOC_VERSION}}" ]; then
+            echo "protoc: want {{.PROTOC_VERSION}}, got $got"
+            exit 1
+          fi
+      - >-
+        protoc -I .
+        --plugin=protoc-gen-go={{.GOBIN}}/protoc-gen-go
+        --plugin=protoc-gen-go-grpc={{.GOBIN}}/protoc-gen-go-grpc
+        --go_out=. --go_opt=paths=source_relative
+        --go-grpc_out=. --go-grpc_opt=paths=source_relative
+        {{.PROTO_FILES}}
+
+  build:
+    desc: Build the client and the server into bin/
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/ ./cmd/gophkeeper
+      - go build -o bin/ ./cmd/server
+
+  build:all:
+    desc: Cross-compile the client for Windows, Linux and macOS
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - for:
+          matrix:
+            OS: [windows, linux, darwin]
+            ARCH: [amd64, arm64]
+        cmd: GOOS={{.ITEM.OS}} GOARCH={{.ITEM.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o bin/{{.ITEM.OS}}-{{.ITEM.ARCH}}/ ./cmd/gophkeeper
+
+  test:
+    desc: Run tests with the race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  cover:
+    desc: Run tests and print coverage per function and in total, without generated code
+    cmds:
+      - go test -count=1 -coverprofile=coverage.out ./...
+      - grep -v '\.pb\.go:' coverage.out > coverage.src.out
+      - go tool cover -func=coverage.src.out
+
+  check:
+    desc: Build, vet, check formatting and test
+    cmds:
+      - task: build
+      - go vet ./...
+      - cmd: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - task: test
