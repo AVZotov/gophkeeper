@@ -7,7 +7,7 @@
 - Требования: [docs/technical-spec.md](docs/technical-spec.md)
 - Архитектурные решения: [docs/decisions.md](docs/decisions.md)
 
-Проект в разработке: пока есть только каркас клиента и сервера.
+Проект в разработке.
 
 ## Требования
 
@@ -22,8 +22,7 @@
 нужен.
 
 ```bash
-task tools       # плагины protoc в версиях из go.mod
-task proto       # перегенерация *.pb.go (сам ставит плагины, проверяет версию protoc)
+task proto       # перегенерация *.pb.go: плагины в версиях из go.mod, проверка версии protoc
 task build       # bin/gophkeeper и bin/server
 task build:all   # клиент под Windows, Linux, macOS × amd64, arm64 в bin/<os>-<arch>/
 task check       # сборка, go vet, gofmt, тесты

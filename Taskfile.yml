@@ -9,30 +9,21 @@ vars:
   PROTO_FILES: api/gophkeeper/v1/gophkeeper.proto internal/client/recordpb/record.proto
 
 tasks:
-  tools:
-    desc: Install the protoc plugins pinned in go.mod
-    cmds:
-      - go install tool
-
   proto:
     desc: Generate Go code from .proto files ({{.PROTOC_VERSION}} required)
-    deps: [tools]
     vars:
-      # Plugins installed by the tools task, so protoc never picks up other
-      # versions from PATH.
-      GOBIN:
-        sh: b=$(go env GOBIN); echo "${b:-$(go env GOPATH)/bin}"
+      PROTOC_GOT:
+        sh: protoc --version 2>&1 || true
+    preconditions:
+      - sh: '[ "{{.PROTOC_GOT}}" = "{{.PROTOC_VERSION}}" ]'
+        msg: 'protoc: want {{.PROTOC_VERSION}}, got {{.PROTOC_GOT}}'
     cmds:
-      - cmd: |
-          got=$(protoc --version)
-          if [ "$got" != "{{.PROTOC_VERSION}}" ]; then
-            echo "protoc: want {{.PROTOC_VERSION}}, got $got"
-            exit 1
-          fi
+      # go tool -n builds the plugins pinned in go.mod and prints their paths,
+      # so protoc never picks up other versions from PATH.
       - >-
         protoc -I .
-        --plugin=protoc-gen-go={{.GOBIN}}/protoc-gen-go
-        --plugin=protoc-gen-go-grpc={{.GOBIN}}/protoc-gen-go-grpc
+        --plugin=protoc-gen-go="$(go tool -n protoc-gen-go)"
+        --plugin=protoc-gen-go-grpc="$(go tool -n protoc-gen-go-grpc)"
         --go_out=. --go_opt=paths=source_relative
         --go-grpc_out=. --go-grpc_opt=paths=source_relative
         {{.PROTO_FILES}}
@@ -67,10 +58,11 @@ tasks:
       - go tool cover -func=coverage.src.out
 
   check:
-    desc: Build, vet, check formatting and test
+    desc: Build, vet, check go.mod, formatting and test
     cmds:
-      - task: build
+      - go build ./...
       - go vet ./...
+      - go mod tidy -diff
       - cmd: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then

@@ -18,14 +18,14 @@ func main() {
 	}
 }
 
-// newRootCmd builds the gophkeeper command tree. version and buildDate are
-// printed by the version subcommand.
-func newRootCmd(version, buildDate string) *cobra.Command {
+// newRootCmd builds the gophkeeper command tree. clientVersion and
+// clientBuildDate are printed by the version subcommand.
+func newRootCmd(clientVersion, clientBuildDate string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "gophkeeper",
 		Short: "GophKeeper password manager client",
 	}
-	root.AddCommand(newVersionCmd(version, buildDate))
+	root.AddCommand(newVersionCmd(clientVersion, clientBuildDate))
 
 	return root
 }
