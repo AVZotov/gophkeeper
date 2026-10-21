@@ -36,8 +36,8 @@ func seq(start byte) [KeySize]byte {
 	return k
 }
 
-// stdGCM returns plain AES-256-GCM from the standard library with an
-// explicit nonce, independent of the code under test.
+// stdGCM returns plain AES-256-GCM with an explicit nonce, to check the
+// stored format without the code under test.
 func stdGCM(t *testing.T, key [KeySize]byte) cipher.AEAD {
 	t.Helper()
 	block, err := aes.NewCipher(key[:])
@@ -47,7 +47,7 @@ func stdGCM(t *testing.T, key [KeySize]byte) cipher.AEAD {
 	return gcm
 }
 
-// stdSeal encrypts with plain AES-256-GCM and prepends a random nonce.
+// stdSeal encrypts with plain AES-256-GCM and puts a random nonce in front.
 func stdSeal(t *testing.T, key [KeySize]byte, plaintext, aad []byte) []byte {
 	t.Helper()
 	nonce := make([]byte, 12)
@@ -83,16 +83,8 @@ func TestNewDataKey(t *testing.T) {
 	assert.NotEqual(t, a, b)
 }
 
-// TestDeriveKeysKnownAnswer pins Argon2id parameters, HKDF labels and the
-// derivation scheme. The expected keys were cross-checked with OpenSSL:
-//
-//	openssl kdf -keylen 32 -kdfopt pass:'correct horse battery staple' \
-//	  -kdfopt salt:0123456789abcdef -kdfopt iter:3 -kdfopt memcost:65536 \
-//	  -kdfopt lanes:4 ARGON2ID
-//	openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt mode:EXPAND_ONLY \
-//	  -kdfopt hexkey:<master> -kdfopt info:gophkeeper/v1/wrap-key HKDF
-//
-// If this test fails, existing users can no longer log in.
+// TestDeriveKeysKnownAnswer pins the Argon2id parameters, the HKDF labels and
+// the derivation scheme. If it fails, existing users can no longer log in.
 func TestDeriveKeysKnownAnswer(t *testing.T) {
 	wrap, login := deriveTestKeys(t, testPassword, testSalt)
 
@@ -175,8 +167,8 @@ func TestEnvelope(t *testing.T) {
 	}
 }
 
-// TestEnvelopeFormat checks the stored format against plain AES-256-GCM:
-// 12-byte nonce, then the encrypted data key and the tag, no AAD.
+// TestEnvelopeFormat pins the stored envelope format: 12-byte nonce, then the
+// encrypted data key and the tag, no AAD.
 func TestEnvelopeFormat(t *testing.T) {
 	wrap := WrapKey(seq(32))
 	data := DataKey(seq(64))
@@ -196,7 +188,7 @@ func TestEnvelopeFormat(t *testing.T) {
 		assert.Equal(t, data, got)
 	})
 
-	// Produced with pyca/cryptography AESGCM, nonce = bytes 200..211.
+	// Encrypted outside this package, nonce = bytes 200..211.
 	t.Run("fixed vector", func(t *testing.T) {
 		envelope := mustHex(t, "c8c9cacbcccdcecfd0d1d2d3e508eca1f713e48516d6c9a6ae354b9bc195612d"+
 			"85a72ea605ac7fa1952e3be773b4da1739f2e636e7b2fa6de3d53e37")
@@ -253,9 +245,8 @@ func TestRecord(t *testing.T) {
 	}
 }
 
-// TestRecordFormat checks the stored format against plain AES-256-GCM:
-// 12-byte nonce, then the ciphertext and the tag, AAD = the 16 bytes of the
-// record UUID.
+// TestRecordFormat pins the stored record format: 12-byte nonce, then the
+// ciphertext and the tag, with the 16 bytes of the record UUID as AAD.
 func TestRecordFormat(t *testing.T) {
 	key := DataKey(seq(0))
 	id := uuid.MustParse("0199f3a2-7c4e-7b1d-9f3a-2c4e7b1d9f3a")
@@ -276,8 +267,7 @@ func TestRecordFormat(t *testing.T) {
 		assert.Equal(t, plaintext, got)
 	})
 
-	// Produced with pyca/cryptography AESGCM, nonce = bytes 100..111,
-	// AAD = uuid.UUID(...).bytes.
+	// Encrypted outside this package, nonce = bytes 100..111.
 	t.Run("fixed vector", func(t *testing.T) {
 		ciphertext := mustHex(t, "6465666768696a6b6c6d6e6f3b7ebd141c9d76ec5b01309abeff12479d4d3804"+
 			"9dff87ab0248fb0a3a")

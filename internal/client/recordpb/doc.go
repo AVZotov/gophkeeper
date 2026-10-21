@@ -1,7 +1,5 @@
-// Package recordpb contains the plaintext format of a GophKeeper record.
-// The client marshals a [Record], encrypts it and sends only the ciphertext;
-// the server never sees this format.
+// Package recordpb is the plaintext format of a GophKeeper record. The client
+// encrypts a marshaled [Record] and sends the server only the ciphertext.
 //
-// The code is generated from record.proto by "task proto"; this file is the
-// only one written by hand.
+// The code is generated from record.proto; only this file is written by hand.
 package recordpb

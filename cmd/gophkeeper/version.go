@@ -6,8 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newVersionCmd returns the version subcommand, which prints the client
-// version and build date.
+// newVersionCmd returns the version command, which prints the client version
+// and build date.
 func newVersionCmd(clientVersion, clientBuildDate string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",

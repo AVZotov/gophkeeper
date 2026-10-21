@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Build information, replaced at build time via -ldflags -X.
+// Build information, set at build time with -ldflags -X.
 var (
 	version   = "dev"
 	buildDate = "unknown"
@@ -18,8 +18,8 @@ func main() {
 	}
 }
 
-// newRootCmd builds the gophkeeper command tree. clientVersion and
-// clientBuildDate are printed by the version subcommand.
+// newRootCmd builds the gophkeeper command tree. The version command prints
+// clientVersion and clientBuildDate.
 func newRootCmd(clientVersion, clientBuildDate string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "gophkeeper",

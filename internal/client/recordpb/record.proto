@@ -1,19 +1,18 @@
 // Plaintext content of a GophKeeper record.
 //
-// Client-only format: the client marshals a Record, encrypts it with the data
-// key and sends only the ciphertext. The server never sees this message.
+// Only the client knows this format: it encrypts a marshaled Record and sends
+// the server just the ciphertext.
 edition = "2024";
 
 package gophkeeper.record.v1;
 
 option go_package = "github.com/AVZotov/gophkeeper/internal/client/recordpb";
 
-// Proto3 semantics: an unset scalar field equals its zero value. No presence
-// tracking is needed, and builders take plain values instead of pointers.
+// As in proto3, an unset field equals its zero value, so builders take plain
+// values instead of pointers.
 option features.field_presence = IMPLICIT;
 
-// Record is the content of one record: common fields and the data of one of
-// the supported types.
+// Record is the content of one record: common fields and typed data.
 message Record {
   // Name shown in record lists.
   string name = 1;
