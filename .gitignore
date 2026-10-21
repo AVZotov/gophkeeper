@@ -23,6 +23,7 @@
 !docs/*.md
 
 !Taskfile.yml
+!compose.yaml
 !.github/workflows/*.yml
 
 # ...even if they are in subdirectories

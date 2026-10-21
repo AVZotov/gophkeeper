@@ -45,8 +45,18 @@ tasks:
             ARCH: [amd64, arm64]
         cmd: GOOS={{.ITEM.OS}} GOARCH={{.ITEM.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o bin/{{.ITEM.OS}}-{{.ITEM.ARCH}}/ ./cmd/gophkeeper
 
+  db:up:
+    desc: Start PostgreSQL for development and wait until it is ready
+    cmds:
+      - docker compose up -d --wait
+
+  db:down:
+    desc: Stop PostgreSQL for development, keeping its data
+    cmds:
+      - docker compose down
+
   test:
-    desc: Run tests with the race detector
+    desc: Run tests with the race detector (storage tests need Docker)
     cmds:
       - go test -race -count=1 ./...
 
