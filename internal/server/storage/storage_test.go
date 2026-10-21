@@ -8,12 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-)
 
-// postgresImage matches the image in compose.yaml.
-const postgresImage = "postgres:18-alpine"
+	"github.com/AVZotov/gophkeeper/internal/pgtest"
+)
 
 // testDSN and testStore point to one PostgreSQL container shared by all tests
 // of the package.
@@ -32,24 +29,19 @@ func TestMain(m *testing.M) {
 }
 
 // runTests starts the container, runs the tests and removes the container.
-// Without Docker it returns an error, so the tests fail instead of being
-// skipped.
 func runTests(m *testing.M) (int, error) {
 	ctx := context.Background()
-	ctr, err := postgres.Run(ctx, postgresImage, postgres.BasicWaitStrategies())
+	dsn, stop, err := pgtest.Start(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("start PostgreSQL container (is Docker running?): %w", err)
+		return 0, err
 	}
 	defer func() {
-		if err := testcontainers.TerminateContainer(ctr); err != nil {
-			fmt.Fprintln(os.Stderr, "terminate container:", err)
+		if err := stop(); err != nil {
+			fmt.Fprintln(os.Stderr, "remove container:", err)
 		}
 	}()
 
-	testDSN, err = ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		return 0, fmt.Errorf("container DSN: %w", err)
-	}
+	testDSN = dsn
 	testStore, err = Open(ctx, testDSN)
 	if err != nil {
 		return 0, fmt.Errorf("open store: %w", err)

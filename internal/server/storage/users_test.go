@@ -22,12 +22,15 @@ func creds(b byte) Credentials {
 	}
 }
 
+// testTime has microseconds, the precision PostgreSQL keeps.
+var testTime = time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+
 func TestCreateUser(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
 
-	require.NoError(t, s.CreateUser(ctx, "alice", creds(1)))
-	require.NoError(t, s.CreateUser(ctx, "bob", creds(2)))
+	require.NoError(t, s.CreateUser(ctx, "alice", creds(1), testTime))
+	require.NoError(t, s.CreateUser(ctx, "bob", creds(2), testTime))
 
 	alice, err := s.UserByLogin(ctx, "alice")
 	require.NoError(t, err)
@@ -45,15 +48,15 @@ func TestCreateUser(t *testing.T) {
 
 	changed, err := s.PasswordChangedAt(ctx, alice.ID)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now(), changed, time.Minute)
+	assert.True(t, testTime.Equal(changed), "got %v", changed)
 }
 
 func TestCreateUserLoginTaken(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
-	require.NoError(t, s.CreateUser(ctx, "alice", creds(1)))
+	require.NoError(t, s.CreateUser(ctx, "alice", creds(1), testTime))
 
-	err := s.CreateUser(ctx, "alice", creds(2))
+	err := s.CreateUser(ctx, "alice", creds(2), testTime)
 	require.ErrorIs(t, err, ErrUserExists)
 
 	u, err := s.UserByLogin(ctx, "alice")
@@ -64,39 +67,35 @@ func TestCreateUserLoginTaken(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
-	require.NoError(t, s.CreateUser(ctx, "alice", creds(1)))
-	require.NoError(t, s.CreateUser(ctx, "bob", creds(2)))
+	require.NoError(t, s.CreateUser(ctx, "alice", creds(1), testTime))
+	require.NoError(t, s.CreateUser(ctx, "bob", creds(2), testTime))
 	alice, err := s.UserByLogin(ctx, "alice")
 	require.NoError(t, err)
 	bob, err := s.UserByLogin(ctx, "bob")
 	require.NoError(t, err)
 
-	// Move both change times into the past to see which one is updated.
-	past := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err = s.pool.Exec(ctx, `UPDATE users SET password_changed_at = $1`, past)
-	require.NoError(t, err)
-
-	require.NoError(t, s.ChangePassword(ctx, alice.ID, creds(3)))
+	later := testTime.Add(time.Hour)
+	require.NoError(t, s.ChangePassword(ctx, alice.ID, creds(3), later))
 
 	got, err := s.UserByLogin(ctx, "alice")
 	require.NoError(t, err)
 	assert.Equal(t, creds(3), got.Credentials)
 	changed, err := s.PasswordChangedAt(ctx, alice.ID)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now(), changed, time.Minute)
+	assert.True(t, later.Equal(changed), "got %v", changed)
 
 	got, err = s.UserByLogin(ctx, "bob")
 	require.NoError(t, err)
 	assert.Equal(t, creds(2), got.Credentials, "other users must stay intact")
 	changed, err = s.PasswordChangedAt(ctx, bob.ID)
 	require.NoError(t, err)
-	assert.True(t, past.Equal(changed), "got %v", changed)
+	assert.True(t, testTime.Equal(changed), "got %v", changed)
 }
 
 func TestUserNotFound(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
-	require.NoError(t, s.CreateUser(ctx, "alice", creds(1)))
+	require.NoError(t, s.CreateUser(ctx, "alice", creds(1), testTime))
 	alice, err := s.UserByLogin(ctx, "alice")
 	require.NoError(t, err)
 	missingID := alice.ID + 1
@@ -114,7 +113,7 @@ func TestUserNotFound(t *testing.T) {
 			return err
 		}},
 		{"ChangePassword", func() error {
-			return s.ChangePassword(ctx, missingID, creds(2))
+			return s.ChangePassword(ctx, missingID, creds(2), testTime)
 		}},
 		{"PasswordChangedAt", func() error {
 			_, err := s.PasswordChangedAt(ctx, missingID)
@@ -164,7 +163,7 @@ func TestUserLogValue(t *testing.T) {
 
 func TestUsersCanceledContext(t *testing.T) {
 	s := newStore(t)
-	require.NoError(t, s.CreateUser(t.Context(), "alice", creds(1)))
+	require.NoError(t, s.CreateUser(t.Context(), "alice", creds(1), testTime))
 	alice, err := s.UserByLogin(t.Context(), "alice")
 	require.NoError(t, err)
 
@@ -176,7 +175,7 @@ func TestUsersCanceledContext(t *testing.T) {
 		call func() error
 	}{
 		{"CreateUser", func() error {
-			return s.CreateUser(ctx, "bob", creds(2))
+			return s.CreateUser(ctx, "bob", creds(2), testTime)
 		}},
 		{"UserByLogin", func() error {
 			_, err := s.UserByLogin(ctx, "alice")
@@ -187,7 +186,7 @@ func TestUsersCanceledContext(t *testing.T) {
 			return err
 		}},
 		{"ChangePassword", func() error {
-			return s.ChangePassword(ctx, alice.ID, creds(2))
+			return s.ChangePassword(ctx, alice.ID, creds(2), testTime)
 		}},
 		{"PasswordChangedAt", func() error {
 			_, err := s.PasswordChangedAt(ctx, alice.ID)

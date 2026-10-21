@@ -42,8 +42,14 @@ const (
 	loginKeyInfo = "gophkeeper/v1/login-key"
 )
 
+// Sizes of the AES-GCM nonce and tag in bytes.
+const (
+	nonceSize = 12
+	tagSize   = 16
+)
+
 // envelopeSize is the size of a sealed data key: nonce, key and GCM tag.
-const envelopeSize = 12 + KeySize + 16
+const envelopeSize = nonceSize + KeySize + tagSize
 
 const redacted = "[REDACTED]"
 

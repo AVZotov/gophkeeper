@@ -7,6 +7,7 @@ vars:
   LDFLAGS: -X main.version={{.VERSION}} -X main.buildDate={{.BUILD_DATE}}
   PROTOC_VERSION: libprotoc 36.2
   PROTO_FILES: api/gophkeeper/v1/gophkeeper.proto internal/client/recordpb/record.proto
+  CERT_DAYS: 365
 
 tasks:
   proto:
@@ -54,6 +55,25 @@ tasks:
     desc: Stop PostgreSQL for development, keeping its data
     cmds:
       - docker compose down
+
+  certs:
+    desc: Create a development CA and a server certificate for localhost and 127.0.0.1 in certs/
+    # Commands work with both OpenSSL and LibreSSL. Existing certificates are
+    # kept, so clients that trust the CA keep working; delete certs/ to renew.
+    # Keys are created with umask 077 in sh: the Task shell has no umask.
+    status:
+      - test -f certs/ca.crt -a -f certs/server.crt -a -f certs/server.key
+    cmds:
+      - mkdir -p certs
+      - printf 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n' > certs/ca.ext
+      - printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n' > certs/server.ext
+      - sh -c 'umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out certs/ca.key'
+      - openssl req -new -key certs/ca.key -subj "/CN=GophKeeper dev CA" -out certs/ca.csr
+      - openssl x509 -req -in certs/ca.csr -signkey certs/ca.key -days {{.CERT_DAYS}} -sha256 -extfile certs/ca.ext -out certs/ca.crt
+      - sh -c 'umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out certs/server.key'
+      - openssl req -new -key certs/server.key -subj "/CN=localhost" -out certs/server.csr
+      - openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key -set_serial 0x$(openssl rand -hex 16) -days {{.CERT_DAYS}} -sha256 -extfile certs/server.ext -out certs/server.crt
+      - rm certs/ca.csr certs/server.csr certs/ca.ext certs/server.ext
 
   test:
     desc: Run tests with the race detector (storage tests need Docker)

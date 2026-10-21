@@ -44,12 +44,14 @@ func (u User) LogValue() slog.Value {
 	return slog.GroupValue(slog.Int64("id", u.ID), slog.String("login", u.Login))
 }
 
-// CreateUser registers a user with the given login. Returns [ErrUserExists]
-// if the login is taken.
-func (s *Store) CreateUser(ctx context.Context, login string, c Credentials) error {
+// CreateUser registers a user with the given login. now becomes the
+// password change time, so it must come from the clock that sets token issue
+// times. Returns [ErrUserExists] if the login is taken.
+func (s *Store) CreateUser(ctx context.Context, login string, c Credentials, now time.Time) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (login, salt, login_key_hash, envelope) VALUES ($1, $2, $3, $4)`,
-		login, c.Salt, c.LoginKeyHash, c.Envelope)
+		`INSERT INTO users (login, salt, login_key_hash, envelope, password_changed_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		login, c.Salt, c.LoginKeyHash, c.Envelope, now)
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == pgerrcode.UniqueViolation {
 		return ErrUserExists
 	}
@@ -62,26 +64,22 @@ func (s *Store) CreateUser(ctx context.Context, login string, c Credentials) err
 // UserByLogin returns the user with the given login. Returns
 // [ErrUserNotFound] if there is none.
 func (s *Store) UserByLogin(ctx context.Context, login string) (User, error) {
-	u := User{Login: login}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, salt, login_key_hash, envelope FROM users WHERE login = $1`,
-		login).Scan(&u.ID, &u.Salt, &u.LoginKeyHash, &u.Envelope)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrUserNotFound
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("select user: %w", err)
-	}
-	return u, nil
+	return s.userWhere(ctx, "login = $1", login)
 }
 
 // UserByID returns the user with the given ID. Returns [ErrUserNotFound] if
 // there is none.
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
-	u := User{ID: id}
+	return s.userWhere(ctx, "id = $1", id)
+}
+
+// userWhere returns the user matching cond, a constant SQL condition on $1.
+// Returns [ErrUserNotFound] if there is none.
+func (s *Store) userWhere(ctx context.Context, cond string, arg any) (User, error) {
+	var u User
 	err := s.pool.QueryRow(ctx,
-		`SELECT login, salt, login_key_hash, envelope FROM users WHERE id = $1`,
-		id).Scan(&u.Login, &u.Salt, &u.LoginKeyHash, &u.Envelope)
+		`SELECT id, login, salt, login_key_hash, envelope FROM users WHERE `+cond,
+		arg).Scan(&u.ID, &u.Login, &u.Salt, &u.LoginKeyHash, &u.Envelope)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
@@ -92,14 +90,15 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 }
 
 // ChangePassword replaces the user's credentials and sets the password change
-// time to now, so tokens issued before it can be rejected. Returns
-// [ErrUserNotFound] if there is no user with this ID.
-func (s *Store) ChangePassword(ctx context.Context, id int64, c Credentials) error {
+// time to now, so tokens issued before it can be rejected. now must come from
+// the clock that sets token issue times. Returns [ErrUserNotFound] if there
+// is no user with this ID.
+func (s *Store) ChangePassword(ctx context.Context, id int64, c Credentials, now time.Time) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE users
-		 SET salt = $2, login_key_hash = $3, envelope = $4, password_changed_at = now()
+		 SET salt = $2, login_key_hash = $3, envelope = $4, password_changed_at = $5
 		 WHERE id = $1`,
-		id, c.Salt, c.LoginKeyHash, c.Envelope)
+		id, c.Salt, c.LoginKeyHash, c.Envelope, now)
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
 	}
@@ -109,8 +108,8 @@ func (s *Store) ChangePassword(ctx context.Context, id int64, c Credentials) err
 	return nil
 }
 
-// PasswordChangedAt returns when the user last changed the password, or the
-// registration time if never. Returns [ErrUserNotFound] if there is no user
+// PasswordChangedAt returns the time given to the last [Store.ChangePassword],
+// or to [Store.CreateUser] if the password never changed. Returns [ErrUserNotFound] if there is no user
 // with this ID.
 func (s *Store) PasswordChangedAt(ctx context.Context, id int64) (time.Time, error) {
 	var t time.Time
