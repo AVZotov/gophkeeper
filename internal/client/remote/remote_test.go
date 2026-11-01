@@ -138,7 +138,7 @@ func TestRejectsServerWithoutTLS(t *testing.T) {
 
 	_, err := dial(t, lis, cert.CertFile, 0).GetSalt(t.Context(), "alice")
 
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, ErrTLS)
 	assert.Zero(t, auth.calls.Load())
 }
 
@@ -150,7 +150,8 @@ func TestRejectsUntrustedServer(t *testing.T) {
 
 	_, err := dial(t, lis, tlstest.New(t).CertFile, 0).GetSalt(t.Context(), "alice")
 
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, ErrTLS)
+	assert.ErrorContains(t, err, "x509", "the cause is kept")
 	assert.Zero(t, auth.calls.Load())
 }
 
@@ -185,6 +186,10 @@ func TestFromStatus(t *testing.T) {
 		{name: "unavailable", err: status.Error(codes.Unavailable, "down"), wantErr: ErrUnavailable},
 		{name: "unauthenticated", err: status.Error(codes.Unauthenticated, "no"), wantErr: ErrWrongCredentials},
 		{name: "already exists", err: status.Error(codes.AlreadyExists, "taken"), wantErr: ErrLoginTaken},
+		{name: "not found", err: status.Error(codes.NotFound, "record not found"), wantErr: ErrRecordNotFound},
+		{name: "canceled", err: status.Error(codes.Canceled, "canceled"), wantErr: context.Canceled},
+		{name: "deadline", err: status.Error(codes.DeadlineExceeded, "late"), wantErr: context.DeadlineExceeded},
+		{name: "handshake", err: status.Error(codes.Unavailable, "connection error: transport: authentication handshake failed: x509"), wantErr: ErrTLS},
 		{name: "not a status", err: plain, wantErr: plain},
 	}
 	for _, tt := range tests {

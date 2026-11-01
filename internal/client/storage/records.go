@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"uuid"
@@ -40,20 +39,6 @@ func (s *Store) SaveLocal(ctx context.Context, id uuid.UUID, deleted bool, ciphe
 		return fmt.Errorf("save record %s: %w", id, err)
 	}
 	return nil
-}
-
-// Get returns the record with the given ID, deleted or not. Returns
-// [ErrRecordNotFound] if there is no such record.
-func (s *Store) Get(ctx context.Context, id uuid.UUID) (Record, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+recordColumns+` FROM records WHERE id = ?`, id[:])
-	r, err := scanRecord(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, ErrRecordNotFound
-	}
-	if err != nil {
-		return Record{}, fmt.Errorf("get record %s: %w", id, err)
-	}
-	return r, nil
 }
 
 // List returns the records that are not deleted. Returns an error if the
@@ -114,9 +99,10 @@ func (s *Store) ApplyRemote(ctx context.Context, r Record) error {
 	return nil
 }
 
-// query returns the records selected by query.
-func (s *Store) query(ctx context.Context, query string) ([]Record, error) {
-	rows, err := s.db.QueryContext(ctx, query)
+// query returns the records selected by query with args. query selects
+// [recordColumns].
+func (s *Store) query(ctx context.Context, query string, args ...any) ([]Record, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select records: %w", err)
 	}
@@ -124,30 +110,21 @@ func (s *Store) query(ctx context.Context, query string) ([]Record, error) {
 
 	var records []Record
 	for rows.Next() {
-		r, err := scanRecord(rows)
-		if err != nil {
+		var (
+			r  Record
+			id []byte
+		)
+		if err := rows.Scan(&id, &r.Revision, &r.Deleted, &r.Ciphertext, &r.Dirty); err != nil {
 			return nil, fmt.Errorf("select records: %w", err)
 		}
+		// The table checks that every ID is 16 bytes.
+		r.ID = uuid.UUID(id)
 		records = append(records, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("select records: %w", err)
 	}
 	return records, nil
-}
-
-// scanRecord reads a row of [recordColumns].
-func scanRecord(row interface{ Scan(...any) error }) (Record, error) {
-	var (
-		r  Record
-		id []byte
-	)
-	if err := row.Scan(&id, &r.Revision, &r.Deleted, &r.Ciphertext, &r.Dirty); err != nil {
-		return Record{}, err
-	}
-	// The table checks that every ID is 16 bytes.
-	r.ID = uuid.UUID(id)
-	return r, nil
 }
 
 // notNil returns b, or an empty slice if b is nil: the driver stores a nil

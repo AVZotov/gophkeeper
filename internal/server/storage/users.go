@@ -109,8 +109,8 @@ func (s *Store) ChangePassword(ctx context.Context, id int64, c Credentials, now
 }
 
 // PasswordChangedAt returns the time given to the last [Store.ChangePassword],
-// or to [Store.CreateUser] if the password never changed. Returns [ErrUserNotFound] if there is no user
-// with this ID.
+// or to [Store.CreateUser] if the password never changed. Returns
+// [ErrUserNotFound] if there is no user with this ID.
 func (s *Store) PasswordChangedAt(ctx context.Context, id int64) (time.Time, error) {
 	var t time.Time
 	err := s.pool.QueryRow(ctx,

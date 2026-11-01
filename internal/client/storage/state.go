@@ -43,14 +43,7 @@ const selectState = `SELECT server_address, ca_path, login, salt, envelope, toke
 
 // State returns the saved state. Returns [ErrNoState] if it is not saved.
 func (s *Store) State(ctx context.Context) (State, error) {
-	st, err := scanState(s.db.QueryRowContext(ctx, selectState))
-	if errors.Is(err, sql.ErrNoRows) {
-		return State{}, ErrNoState
-	}
-	if err != nil {
-		return State{}, fmt.Errorf("get state: %w", err)
-	}
-	return st, nil
+	return readState(s.db.QueryRowContext(ctx, selectState))
 }
 
 // SaveState saves st, replacing the saved state. Returns an error if the
@@ -64,12 +57,9 @@ func (s *Store) SaveState(ctx context.Context, st State) error {
 // [ErrNoState] if the state is not saved.
 func (s *Store) UpdateState(ctx context.Context, update func(*State)) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
-		st, err := scanState(tx.QueryRowContext(ctx, selectState))
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNoState
-		}
+		st, err := readState(tx.QueryRowContext(ctx, selectState))
 		if err != nil {
-			return fmt.Errorf("get state: %w", err)
+			return err
 		}
 		update(&st)
 		return saveState(ctx, tx, st)
@@ -90,11 +80,18 @@ func (s *Store) Clear(ctx context.Context) error {
 	})
 }
 
-// scanState reads a row of [selectState].
-func scanState(row *sql.Row) (State, error) {
+// readState reads the row of [selectState]. Returns [ErrNoState] if there
+// is none.
+func readState(row *sql.Row) (State, error) {
 	var st State
 	err := row.Scan(&st.ServerAddress, &st.CAPath, &st.Login, &st.Salt, &st.Envelope, &st.Token, &st.LastRevision)
-	return st, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, ErrNoState
+	}
+	if err != nil {
+		return State{}, fmt.Errorf("get state: %w", err)
+	}
+	return st, nil
 }
 
 // saveState replaces the saved state with st.

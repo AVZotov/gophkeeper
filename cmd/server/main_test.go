@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -48,28 +47,10 @@ const waitTimeout = 10 * time.Second
 var testDSN string
 
 func TestMain(m *testing.M) {
-	code, err := runTests(m)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	os.Exit(code)
-}
-
-// runTests starts the container, runs the tests and removes the container.
-func runTests(m *testing.M) (int, error) {
-	dsn, stop, err := pgtest.Start(context.Background())
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err := stop(); err != nil {
-			fmt.Fprintln(os.Stderr, "remove container:", err)
-		}
-	}()
-
-	testDSN = dsn
-	return m.Run(), nil
+	os.Exit(pgtest.Run(m, func(dsn string) (func(), error) {
+		testDSN = dsn
+		return nil, nil
+	}))
 }
 
 // startServer serves the real server with the test storage on an in-memory
@@ -309,6 +290,22 @@ func TestVaultMessageTooLarge(t *testing.T) {
 
 	_, err = client.Push(signIn(t, pb.NewAuthClient(conn)), req, noClientLimit)
 	assert.Equal(t, codes.ResourceExhausted, status.Code(err), "got %v", err)
+}
+
+// TestServerRejectsLargeMetadata sends metadata far over the limit to a
+// public method, which the token check does not guard.
+func TestServerRejectsLargeMetadata(t *testing.T) {
+	const largeMetadata = 1 << 20
+	tc := tlstest.New(t)
+	client := pb.NewAuthClient(dial(t, startServer(t, tc), clientTLS(tc)))
+	req := pb.GetSaltRequest_builder{Login: "alice"}.Build()
+
+	_, err := client.GetSalt(metadata.AppendToOutgoingContext(t.Context(), "x-small", "value"), req)
+	require.NoError(t, err)
+
+	ctx := metadata.AppendToOutgoingContext(t.Context(), "x-large", strings.Repeat("a", largeMetadata))
+	_, err = client.GetSalt(ctx, req)
+	assert.Error(t, err)
 }
 
 func TestServerRejectsPlaintext(t *testing.T) {

@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +82,23 @@ func run(t *testing.T, a app, stdin string, args ...string) (stdout, stderr stri
 	cmd.SetArgs(args)
 	err = cmd.ExecuteContext(t.Context())
 	return out.String(), errOut.String(), err
+}
+
+// storedRecord returns the local record with the given ID if it is not
+// deleted or is dirty.
+func storedRecord(t *testing.T, store *storage.Store, id uuid.UUID) storage.Record {
+	t.Helper()
+	live, err := store.List(t.Context())
+	require.NoError(t, err)
+	dirty, err := store.Dirty(t.Context())
+	require.NoError(t, err)
+	for _, r := range append(live, dirty...) {
+		if r.ID == id {
+			return r
+		}
+	}
+	t.Fatalf("no local record %s", id)
+	return storage.Record{}
 }
 
 // sessionPath returns the path of the session file of a.
@@ -303,4 +323,34 @@ func TestReadLine(t *testing.T) {
 			assert.Error(t, err, "input is over")
 		})
 	}
+}
+
+func TestConfigIsRedacted(t *testing.T) {
+	cfg := config{Session: "session-key-secret", Server: "localhost:8443", CA: "ca.crt"}
+
+	var buf bytes.Buffer
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("test", "config", cfg)
+
+	assert.Contains(t, buf.String(), "config.server=localhost:8443")
+	assert.NotContains(t, buf.String(), cfg.Session)
+	for _, verb := range []string{"%v", "%+v", "%s"} {
+		assert.NotContains(t, fmt.Sprintf(verb, cfg), cfg.Session, verb)
+	}
+}
+
+func TestClientDirectoryMadePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not used on Windows")
+	}
+	a := testApp(t)
+	dir, err := a.dir()
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(dir, 0o755))
+
+	_, _, err = run(t, a, "", "lock")
+	require.NoError(t, err)
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(dirMode), info.Mode().Perm())
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -48,6 +49,11 @@ func newRootCmd(version, buildDate string, a app) *cobra.Command {
 		newUnlockCmd(a),
 		newChangePasswordCmd(a),
 		newSyncCmd(a),
+		newAddCmd(a),
+		newListCmd(a),
+		newShowCmd(a),
+		newEditCmd(a),
+		newDeleteCmd(a),
 		newLockCmd(a),
 		newLogoutCmd(a),
 	)
@@ -72,7 +78,7 @@ type app struct {
 }
 
 // path returns the path of the named file, creating the client directory if
-// it does not exist.
+// it does not exist and making it readable only by its owner.
 func (a app) path(name string) (string, error) {
 	dir, err := a.dir()
 	if err != nil {
@@ -80,6 +86,10 @@ func (a app) path(name string) (string, error) {
 	}
 	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return "", fmt.Errorf("create client directory: %w", err)
+	}
+	// MkdirAll keeps the mode of an existing directory.
+	if err := os.Chmod(dir, dirMode); err != nil {
+		return "", fmt.Errorf("make client directory private: %w", err)
 	}
 	return filepath.Join(dir, name), nil
 }
@@ -106,7 +116,7 @@ func (a app) dial(address, caPath string) (*remote.Client, error) {
 // dialSaved returns a client of the saved server, unless the environment
 // sets another one.
 func (a app) dialSaved(cfg config, st storage.State) (*remote.Client, error) {
-	return a.dial(firstSet(cfg.Server, st.ServerAddress), firstSet(cfg.CA, st.CAPath))
+	return a.dial(cmp.Or(cfg.Server, st.ServerAddress), cmp.Or(cfg.CA, st.CAPath))
 }
 
 // openSession returns the path of the session file and the keys of the

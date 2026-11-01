@@ -80,7 +80,7 @@ func (s *Service) Push(ctx context.Context, req *pb.PushRequest) (*pb.PushRespon
 	if err != nil {
 		return nil, err
 	}
-	if err := rpcerr.InvalidArgument(checkPush(req)...); err != nil {
+	if err := rpcerr.InvalidArgument(checkPush(req)); err != nil {
 		return nil, err
 	}
 
@@ -107,8 +107,9 @@ func (s *Service) conflict(ctx context.Context, current storage.Record) error {
 	return st.Err()
 }
 
-// checkPush returns the errors of the invalid fields of req.
-func checkPush(req *pb.PushRequest) []error {
+// checkPush returns the errors of the invalid fields of req joined, or nil
+// if all are valid.
+func checkPush(req *pb.PushRequest) error {
 	var errs []error
 	if n := len(req.GetId()); n != idSize {
 		errs = append(errs, fmt.Errorf("id is %d bytes, want %d", n, idSize))
@@ -125,7 +126,7 @@ func checkPush(req *pb.PushRequest) []error {
 	case n > pb.MaxCiphertextSize:
 		errs = append(errs, fmt.Errorf("ciphertext is %d bytes, more than %d", n, pb.MaxCiphertextSize))
 	}
-	return errs
+	return errors.Join(errs...)
 }
 
 func toProto(r storage.Record) *pb.Record {

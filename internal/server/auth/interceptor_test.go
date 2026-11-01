@@ -56,7 +56,7 @@ func interceptOnly(ctx context.Context, s *Service, method string) (int64, bool,
 	)
 	handler := func(ctx context.Context, _ any) (any, error) {
 		gotCalled = true
-		gotID, _ = UserIDFrom(ctx)
+		gotID, _ = RequireUserID(ctx)
 		return nil, nil
 	}
 	_, err := s.UnaryInterceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, handler)

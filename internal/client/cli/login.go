@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -67,8 +68,8 @@ func newLoginCmd(a app) *cobra.Command {
 
 // enter logs in as login, registering the user first if register is set,
 // and saves the state. It returns the keys for a session. Returns an error
-// if another user is logged in, the CA is not given or the server rejects
-// the login.
+// if another user or another server is logged in to, the CA is not given or
+// the server rejects the login.
 func enter(cmd *cobra.Command, a app, flags serverFlags, login string, register bool) (session.Keys, error) {
 	ctx := cmd.Context()
 	cfg, err := loadConfig()
@@ -89,8 +90,12 @@ func enter(cmd *cobra.Command, a app, flags serverFlags, login string, register 
 	case register || saved.Login != login:
 		return session.Keys{}, fmt.Errorf("logged in as %s, run gophkeeper logout first", saved.Login)
 	}
-	server := firstSet(cfg.Server, flags.server, saved.ServerAddress, defaultServer)
-	ca := firstSet(cfg.CA, flags.ca, saved.CAPath)
+	server := cmp.Or(cfg.Server, flags.server, saved.ServerAddress, defaultServer)
+	// The local records and the last revision belong to the saved server.
+	if saved.ServerAddress != "" && server != saved.ServerAddress {
+		return session.Keys{}, fmt.Errorf("logged in to %s, run gophkeeper logout first", saved.ServerAddress)
+	}
+	ca := cmp.Or(cfg.CA, flags.ca, saved.CAPath)
 	if ca == "" {
 		return session.Keys{}, errNoCA
 	}

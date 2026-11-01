@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 	"uuid"
 
@@ -61,8 +62,18 @@ var (
 	ErrLoginTaken = errors.New("login is taken")
 	// ErrPasswordChanged means the server rejected both the token and the
 	// login key of the session.
-	ErrPasswordChanged = errors.New("password was changed on another device, run gophkeeper unlock")
+	ErrPasswordChanged = errors.New("password was changed on another device: run gophkeeper unlock with the new password")
+	// ErrTLS means the TLS handshake with the server failed: the server
+	// certificate is not signed by the CA, or the server does not speak TLS.
+	ErrTLS = errors.New("secure connection to the server failed, check the CA certificate and the server address")
+	// ErrRecordNotFound means the push is based on a revision of a record the
+	// server does not have.
+	ErrRecordNotFound = errors.New("record not found on the server")
 )
+
+// handshakeFailed is in the message of a gRPC error when the TLS handshake
+// fails. gRPC gives the cause only as text.
+const handshakeFailed = "authentication handshake failed"
 
 // ConflictError means the record changed on the server after the revision
 // the push is based on. Current is the record as the server has it now.
@@ -208,7 +219,9 @@ func (c *Client) Pull(ctx context.Context, since int64) ([]storage.Record, bool,
 
 // Push sends the record, based on its revision, and returns the revision the
 // server gave to the change. Returns [*ConflictError] if the record changed
-// on the server after its revision and the errors of the silent login.
+// on the server after its revision, [ErrRecordNotFound] if the server has no
+// such record while the revision is not 0, and the errors of the silent
+// login.
 func (c *Client) Push(ctx context.Context, r storage.Record) (int64, error) {
 	req := pb.PushRequest_builder{
 		Id: r.ID[:], BaseRevision: r.Revision, Deleted: r.Deleted, Ciphertext: r.Ciphertext,
@@ -251,8 +264,8 @@ func (c *Client) withToken(ctx context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+c.token)
 }
 
-// fromStatus converts a gRPC error into an error of this package. Other
-// errors are returned as they are.
+// fromStatus converts a gRPC error into an error of this package or of
+// package context. Other errors are returned as they are.
 func fromStatus(err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
@@ -262,7 +275,16 @@ func fromStatus(err error) error {
 	case codes.OK:
 		return nil
 	case codes.Unavailable:
+		if strings.Contains(st.Message(), handshakeFailed) {
+			return fmt.Errorf("%w: %s", ErrTLS, st.Message())
+		}
 		return fmt.Errorf("%w: %s", ErrUnavailable, st.Message())
+	case codes.Canceled:
+		return context.Canceled
+	case codes.DeadlineExceeded:
+		return context.DeadlineExceeded
+	case codes.NotFound:
+		return ErrRecordNotFound
 	case codes.Unauthenticated:
 		return ErrWrongCredentials
 	case codes.AlreadyExists:

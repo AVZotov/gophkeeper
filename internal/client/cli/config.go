@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const redacted = "[REDACTED]"
+
 // envPrefix starts the names of the environment variables of the client.
 const envPrefix = "GOPHKEEPER_"
 
@@ -33,10 +35,15 @@ type config struct {
 	CA string `env:"CA"`
 }
 
+// String hides the session key.
+func (c config) String() string {
+	return fmt.Sprintf("{session:%s server:%s ca:%s}", redacted, c.Server, c.CA)
+}
+
 // LogValue hides the session key in slog output.
 func (c config) LogValue() slog.Value {
 	return slog.GroupValue(
-		slog.String("session", "[REDACTED]"),
+		slog.String("session", redacted),
 		slog.String("server", c.Server),
 		slog.String("ca", c.CA),
 	)
@@ -62,14 +69,4 @@ type serverFlags struct {
 func (f *serverFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.server, "server", "", "server address (default: the saved one or "+defaultServer+")")
 	cmd.Flags().StringVar(&f.ca, "ca", "", "CA certificate of the server (default: the saved one)")
-}
-
-// firstSet returns the first value that is not empty, or "" if all are.
-func firstSet(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

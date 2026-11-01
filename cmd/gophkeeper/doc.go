@@ -8,6 +8,14 @@
 //	gophkeeper unlock [--raw]
 //	gophkeeper change-password
 //	gophkeeper sync
+//	gophkeeper add login --name NAME [--meta TEXT] [--login LOGIN] [--password PASSWORD]
+//	gophkeeper add text --name NAME [--meta TEXT] [--text TEXT]
+//	gophkeeper add file --name NAME [--meta TEXT] --file PATH
+//	gophkeeper add card --name NAME [--meta TEXT] --number NUMBER [--holder NAME] --expiry MM/YY [--cvv CVV]
+//	gophkeeper list
+//	gophkeeper show ID [--out PATH]
+//	gophkeeper edit ID [field flags]
+//	gophkeeper delete ID
 //	gophkeeper lock
 //	gophkeeper logout [--force]
 //	gophkeeper version

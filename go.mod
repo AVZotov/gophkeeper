@@ -1,8 +1,6 @@
 module github.com/AVZotov/gophkeeper
 
-go 1.27.0
-
-toolchain go1.27.2
+go 1.27.2
 
 tool (
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc

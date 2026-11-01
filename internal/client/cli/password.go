@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -32,8 +33,8 @@ var (
 func readPassword(cmd *cobra.Command, prompt string) ([]byte, error) {
 	w := cmd.ErrOrStderr()
 	fmt.Fprint(w, prompt)
-	if f, ok := cmd.InOrStdin().(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		password, err := term.ReadPassword(int(f.Fd()))
+	if fd, ok := terminal(cmd); ok {
+		password, err := readTerminal(cmd.Context(), fd, func() ([]byte, error) { return term.ReadPassword(fd) })
 		// The Enter key was not echoed either.
 		fmt.Fprintln(w)
 		if err != nil {
@@ -42,6 +43,43 @@ func readPassword(cmd *cobra.Command, prompt string) ([]byte, error) {
 		return password, nil
 	}
 	return readLine(cmd.InOrStdin())
+}
+
+// terminal returns the file descriptor of the input of cmd if the input is a
+// terminal.
+func terminal(cmd *cobra.Command) (int, bool) {
+	f, ok := cmd.InOrStdin().(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return 0, false
+	}
+	return int(f.Fd()), true
+}
+
+// readTerminal returns what read reads from the terminal fd, or ctx.Err()
+// once ctx is done, for example on Ctrl+C. A blocked read cannot be stopped:
+// the terminal mode is restored, so the echo is back, and the read is left
+// to end with the process.
+func readTerminal(ctx context.Context, fd int, read func() ([]byte, error)) ([]byte, error) {
+	state, err := term.GetState(fd)
+	if err != nil {
+		return nil, err
+	}
+	type result struct {
+		b   []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, err := read()
+		done <- result{b, err}
+	}()
+	select {
+	case r := <-done:
+		return r.b, r.err
+	case <-ctx.Done():
+		term.Restore(fd, state)
+		return nil, ctx.Err()
+	}
 }
 
 // readNewPassword reads a new password twice, with prompt and then with

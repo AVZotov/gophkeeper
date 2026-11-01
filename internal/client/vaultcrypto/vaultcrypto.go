@@ -48,6 +48,10 @@ const (
 	tagSize   = 16
 )
 
+// Overhead is how many bytes encryption adds to a record: the nonce and the
+// GCM tag.
+const Overhead = nonceSize + tagSize
+
 // envelopeSize is the size of a sealed data key: nonce, key and GCM tag.
 const envelopeSize = nonceSize + KeySize + tagSize
 

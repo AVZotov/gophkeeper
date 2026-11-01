@@ -20,9 +20,14 @@ func newSyncCmd(a app) *cobra.Command {
 			" and the local one is saved as a copy with \"" + vaultsync.ConflictSuffix + "\" in its name.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			res, err := runSync(cmd, a)
+			v, err := a.openVault(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer v.Close()
+			res, err := v.sync(cmd.Context())
 			if errors.Is(err, remote.ErrUnavailable) {
-				return fmt.Errorf("%w, changes are saved locally", err)
+				return errSavedLocally
 			}
 			if err != nil {
 				return err
@@ -31,37 +36,4 @@ func newSyncCmd(a app) *cobra.Command {
 			return err
 		},
 	}
-}
-
-// runSync syncs the local records with the server. Returns an error if there
-// is no session or the sync fails.
-func runSync(cmd *cobra.Command, a app) (vaultsync.Result, error) {
-	ctx := cmd.Context()
-	cfg, err := loadConfig()
-	if err != nil {
-		return vaultsync.Result{}, err
-	}
-	store, err := a.openStore(ctx)
-	if err != nil {
-		return vaultsync.Result{}, err
-	}
-	defer store.Close()
-	st, err := loggedIn(ctx, store)
-	if err != nil {
-		return vaultsync.Result{}, err
-	}
-	_, keys, err := a.openSession(cfg)
-	if err != nil {
-		return vaultsync.Result{}, err
-	}
-
-	client, err := a.dialSaved(cfg, st)
-	if err != nil {
-		return vaultsync.Result{}, err
-	}
-	defer client.Close()
-	client.Resume(st.Login, keys.Login, st.Token)
-
-	res, err := vaultsync.Sync(ctx, store, client, keys.Data)
-	return res, errors.Join(err, saveToken(ctx, store, client, st.Token))
 }

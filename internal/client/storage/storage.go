@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
@@ -31,25 +35,25 @@ type Store struct {
 }
 
 // Open opens the SQLite database at path, creating the file if it does not
-// exist, and applies pending migrations. Returns an error if the file cannot
-// be created or opened or a migration fails.
+// exist, and applies pending migrations. An existing file is made readable
+// only by its owner. Returns an error if the file cannot be created, opened
+// or made private, or a migration fails.
 func Open(ctx context.Context, path string) (*Store, error) {
 	// SQLite creates its journal with the mode of the database file, so the
-	// file is created here with the right mode before SQLite opens it.
+	// file gets the right mode before SQLite opens it.
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, fileMode)
 	if err != nil {
 		return nil, fmt.Errorf("create database: %w", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := errors.Join(f.Chmod(fileMode), f.Close()); err != nil {
 		return nil, fmt.Errorf("create database: %w", err)
 	}
 
-	// secure_delete overwrites deleted rows with zeros, so cleared data does
-	// not stay in free pages of the file. Immediate transactions take the
-	// write lock at the start, so a read-modify-write waits for another
-	// process instead of failing halfway.
-	dsn := path + "?_pragma=secure_delete(1)&_txlock=immediate&_busy_timeout=" + strconv.Itoa(busyTimeout)
-	db, err := sql.Open("sqlite", dsn)
+	name, err := dataSourceName(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", name)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -58,6 +62,30 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// dataSourceName returns the SQLite URI of the database at path. A URI,
+// unlike a plain file name, keeps the characters ? and # of the path.
+func dataSourceName(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("database path: %w", err)
+	}
+	// A Windows path starts with the drive letter: file:///C:/...
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	u := url.URL{
+		Scheme: "file",
+		Path:   p,
+		// secure_delete overwrites deleted rows with zeros, so cleared data
+		// does not stay in free pages of the file. Immediate transactions
+		// take the write lock at the start, so a read-modify-write waits for
+		// another process instead of failing halfway.
+		RawQuery: "_pragma=secure_delete(1)&_txlock=immediate&_busy_timeout=" + strconv.Itoa(busyTimeout),
+	}
+	return u.String(), nil
 }
 
 // Close closes the database. Returns an error if closing fails.

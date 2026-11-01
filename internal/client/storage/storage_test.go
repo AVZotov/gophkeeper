@@ -25,6 +25,15 @@ func openStore(t *testing.T) (*Store, string) {
 	return s, path
 }
 
+// get returns the record with the given ID straight from the table.
+func get(t *testing.T, s *Store, id uuid.UUID) Record {
+	t.Helper()
+	found, err := s.query(t.Context(), `SELECT `+recordColumns+` FROM records WHERE id = ?`, id[:])
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	return found[0]
+}
+
 func TestOpenAppliesMigrationsTwice(t *testing.T) {
 	s, path := openStore(t)
 	id := uuid.New()
@@ -34,8 +43,7 @@ func TestOpenAppliesMigrationsTwice(t *testing.T) {
 	require.NoError(t, err)
 	defer again.Close()
 
-	got, err := again.Get(t.Context(), id)
-	require.NoError(t, err)
+	got := get(t, again, id)
 	assert.Equal(t, []byte("x"), got.Ciphertext)
 }
 
@@ -64,8 +72,7 @@ func TestSaveLocal(t *testing.T) {
 		id := uuid.New()
 		require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v1")))
 
-		got, err := s.Get(ctx, id)
-		require.NoError(t, err)
+		got := get(t, s, id)
 		assert.Equal(t, Record{ID: id, Revision: 0, Ciphertext: []byte("v1"), Dirty: true}, got)
 	})
 
@@ -75,16 +82,14 @@ func TestSaveLocal(t *testing.T) {
 	t.Run("keeps the revision of an existing record", func(t *testing.T) {
 		require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v2")))
 
-		got, err := s.Get(ctx, id)
-		require.NoError(t, err)
+		got := get(t, s, id)
 		assert.Equal(t, Record{ID: id, Revision: 7, Ciphertext: []byte("v2"), Dirty: true}, got)
 	})
 
 	t.Run("deletes", func(t *testing.T) {
 		require.NoError(t, s.SaveLocal(ctx, id, true, nil))
 
-		got, err := s.Get(ctx, id)
-		require.NoError(t, err)
+		got := get(t, s, id)
 		assert.Equal(t, Record{ID: id, Revision: 7, Deleted: true, Dirty: true}, got)
 	})
 
@@ -101,13 +106,6 @@ func TestSaveLocal(t *testing.T) {
 			assert.Error(t, s.SaveLocal(ctx, uuid.New(), tt.deleted, tt.ciphertext))
 		})
 	}
-}
-
-func TestGetNotFound(t *testing.T) {
-	s, _ := openStore(t)
-
-	_, err := s.Get(t.Context(), uuid.New())
-	assert.ErrorIs(t, err, ErrRecordNotFound)
 }
 
 func TestListAndDirty(t *testing.T) {
@@ -186,13 +184,11 @@ func TestMarkPushed(t *testing.T) {
 			tt.local.ID, tt.want.ID = id, id
 			require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: tt.local.Revision, Ciphertext: []byte("old")}))
 			require.NoError(t, s.SaveLocal(ctx, id, tt.local.Deleted, tt.local.Ciphertext))
-			pushed, err := s.Get(ctx, id)
-			require.NoError(t, err)
+			pushed := get(t, s, id)
 
 			require.NoError(t, s.MarkPushed(ctx, pushed, tt.server(pushed)))
 
-			got, err := s.Get(ctx, id)
-			require.NoError(t, err)
+			got := get(t, s, id)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -214,14 +210,12 @@ func TestMarkPushed(t *testing.T) {
 				s, _ := openStore(t)
 				id := uuid.New()
 				require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v1")))
-				pushed, err := s.Get(ctx, id)
-				require.NoError(t, err)
+				pushed := get(t, s, id)
 				require.NoError(t, s.SaveLocal(ctx, id, change.deleted, change.ciphertext))
 
 				require.NoError(t, s.MarkPushed(ctx, pushed, server.version(pushed)))
 
-				got, err := s.Get(ctx, id)
-				require.NoError(t, err)
+				got := get(t, s, id)
 				assert.Equal(t, Record{ID: id, Revision: 9, Deleted: change.deleted, Ciphertext: change.ciphertext, Dirty: true}, got)
 			})
 		}
@@ -240,13 +234,11 @@ func TestApplyRemote(t *testing.T) {
 	id := uuid.New()
 
 	require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: 1, Ciphertext: []byte("v1"), Dirty: true}))
-	got, err := s.Get(ctx, id)
-	require.NoError(t, err)
+	got := get(t, s, id)
 	assert.Equal(t, Record{ID: id, Revision: 1, Ciphertext: []byte("v1")}, got, "new record, dirty ignored")
 
 	require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: 2, Deleted: true}))
-	got, err = s.Get(ctx, id)
-	require.NoError(t, err)
+	got = get(t, s, id)
 	assert.Equal(t, Record{ID: id, Revision: 2, Deleted: true}, got, "clean record replaced")
 
 	t.Run("live record without ciphertext", func(t *testing.T) {
@@ -263,8 +255,7 @@ func TestApplyRemoteKeepsDirty(t *testing.T) {
 
 	require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: 2, Ciphertext: []byte("remote")}))
 
-	got, err := s.Get(ctx, id)
-	require.NoError(t, err)
+	got := get(t, s, id)
 	assert.Equal(t, Record{ID: id, Revision: 1, Ciphertext: []byte("local"), Dirty: true}, got)
 }
 
@@ -346,4 +337,48 @@ func TestClear(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, bytes.Contains(data, secret), "deleted ciphertext left in the file")
 	assert.False(t, bytes.Contains(data, []byte("envelope-to-be-wiped")), "deleted envelope left in the file")
+}
+
+func TestOpenMakesExistingFilePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not used on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "test.db")
+	require.NoError(t, os.WriteFile(path, nil, 0o644))
+
+	s, err := Open(t.Context(), path)
+	require.NoError(t, err)
+	defer s.Close()
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(fileMode), info.Mode().Perm())
+}
+
+// TestOpenPathWithURICharacters opens a database in a directory whose name
+// has the characters that start the query and the fragment of a URI.
+func TestOpenPathWithURICharacters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("? is not allowed in Windows file names")
+	}
+	dir := filepath.Join(t.TempDir(), "a?b#c d%20e")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	path := filepath.Join(dir, "test.db")
+
+	s, err := Open(t.Context(), path)
+	require.NoError(t, err)
+	id := uuid.New()
+	require.NoError(t, s.SaveLocal(t.Context(), id, false, []byte("x")))
+	require.NoError(t, s.Close())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Positive(t, info.Size(), "SQLite wrote to the file at the given path")
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no file at a cut path next to the directory")
+	again, err := Open(t.Context(), path)
+	require.NoError(t, err)
+	defer again.Close()
+	assert.Equal(t, []byte("x"), get(t, again, id).Ciphertext)
 }

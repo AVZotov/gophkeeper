@@ -20,35 +20,15 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	code, err := runTests(m)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	os.Exit(code)
-}
-
-// runTests starts the container, runs the tests and removes the container.
-func runTests(m *testing.M) (int, error) {
-	ctx := context.Background()
-	dsn, stop, err := pgtest.Start(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err := stop(); err != nil {
-			fmt.Fprintln(os.Stderr, "remove container:", err)
+	os.Exit(pgtest.Run(m, func(dsn string) (func(), error) {
+		testDSN = dsn
+		var err error
+		testStore, err = Open(context.Background(), dsn)
+		if err != nil {
+			return nil, fmt.Errorf("open store: %w", err)
 		}
-	}()
-
-	testDSN = dsn
-	testStore, err = Open(ctx, testDSN)
-	if err != nil {
-		return 0, fmt.Errorf("open store: %w", err)
-	}
-	defer testStore.Close()
-
-	return m.Run(), nil
+		return testStore.Close, nil
+	}))
 }
 
 // newStore returns the shared store with all tables emptied.

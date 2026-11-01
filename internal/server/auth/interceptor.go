@@ -113,24 +113,16 @@ func bearerToken(md metadata.MD) (string, bool) {
 }
 
 // WithUserID returns a copy of ctx that carries the ID of the user who
-// makes the call. See [UserIDFrom].
+// makes the call. See [RequireUserID].
 func WithUserID(ctx context.Context, id int64) context.Context {
 	return context.WithValue(ctx, userIDKey{}, id)
 }
 
-// UserIDFrom returns the user ID put into the context by
-// [Service.UnaryInterceptor] or [WithUserID]. It reports false if there is
-// none.
-func UserIDFrom(ctx context.Context) (int64, bool) {
-	id, ok := ctx.Value(userIDKey{}).(int64)
-	return id, ok
-}
-
-// RequireUserID returns the user ID from the context, like [UserIDFrom].
-// Returns Unauthenticated if there is none: the call did not go through
-// [Service.UnaryInterceptor].
+// RequireUserID returns the user ID put into the context by
+// [Service.UnaryInterceptor] or [WithUserID]. Returns Unauthenticated if
+// there is none: the call did not go through [Service.UnaryInterceptor].
 func RequireUserID(ctx context.Context) (int64, error) {
-	if id, ok := UserIDFrom(ctx); ok {
+	if id, ok := ctx.Value(userIDKey{}).(int64); ok {
 		return id, nil
 	}
 	return 0, status.Error(codes.Unauthenticated, "missing token")

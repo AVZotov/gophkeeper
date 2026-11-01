@@ -1,14 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ import (
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
 	"github.com/AVZotov/gophkeeper/internal/client/recordpb"
+	"github.com/AVZotov/gophkeeper/internal/client/records"
 	"github.com/AVZotov/gophkeeper/internal/client/remote"
 	"github.com/AVZotov/gophkeeper/internal/client/session"
 	"github.com/AVZotov/gophkeeper/internal/client/storage"
@@ -33,7 +35,7 @@ import (
 	"github.com/AVZotov/gophkeeper/internal/server/auth"
 	"github.com/AVZotov/gophkeeper/internal/server/rpcserver"
 	serverstorage "github.com/AVZotov/gophkeeper/internal/server/storage"
-	"github.com/AVZotov/gophkeeper/internal/server/vault"
+	servervault "github.com/AVZotov/gophkeeper/internal/server/vault"
 	"github.com/AVZotov/gophkeeper/internal/tlstest"
 )
 
@@ -55,27 +57,10 @@ const (
 var testDSN string
 
 func TestMain(m *testing.M) {
-	code, err := runTests(m)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	os.Exit(code)
-}
-
-// runTests starts the container, runs the tests and removes the container.
-func runTests(m *testing.M) (int, error) {
-	dsn, stop, err := pgtest.Start(context.Background())
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err := stop(); err != nil {
-			fmt.Fprintln(os.Stderr, "remove container:", err)
-		}
-	}()
-	testDSN = dsn
-	return m.Run(), nil
+	os.Exit(pgtest.Run(m, func(dsn string) (func(), error) {
+		testDSN = dsn
+		return nil, nil
+	}))
 }
 
 // testServer is the real server with the test database, serving on an
@@ -100,7 +85,7 @@ func startServer(t *testing.T) *testServer {
 	require.NoError(t, err)
 
 	s := &testServer{
-		srv:    rpcserver.New(cert.TLS, authSvc, vault.NewService(store, log)),
+		srv:    rpcserver.New(cert.TLS, authSvc, servervault.NewService(store, log)),
 		lis:    bufconn.Listen(bufSize),
 		ca:     cert.CertFile,
 		secret: secret,
@@ -226,15 +211,13 @@ func (c *testClient) delete(id uuid.UUID) {
 // names returns the sorted names of the live local records.
 func (c *testClient) names() []string {
 	c.t.Helper()
-	records, err := c.store().List(c.t.Context())
+	list, err := c.store().List(c.t.Context())
 	require.NoError(c.t, err)
 	key := c.keys().Data
 	names := []string{}
-	for _, r := range records {
-		plain, err := vaultcrypto.DecryptRecord(key, r.ID, r.Ciphertext)
+	for _, r := range list {
+		rec, err := records.Open(key, r.ID, r.Ciphertext)
 		require.NoError(c.t, err)
-		var rec recordpb.Record
-		require.NoError(c.t, proto.Unmarshal(plain, &rec))
 		names = append(names, rec.GetName())
 	}
 	slices.Sort(names)
@@ -350,6 +333,11 @@ func TestSyncConflicts(t *testing.T) {
 			assert.Equal(t, tt.wantOutput, a.sync())
 			assert.Equal(t, tt.want, a.names())
 			assert.Empty(t, a.dirty())
+			list, err := a.run("", "list")
+			require.NoError(t, err)
+			for _, name := range tt.want {
+				assert.Contains(t, list, name, "list shows every record, conflict copies too")
+			}
 			b.sync()
 			assert.Equal(t, tt.want, b.names(), "both devices agree")
 		})
@@ -361,8 +349,7 @@ func TestSyncConflicts(t *testing.T) {
 func TestSyncLostPushResponse(t *testing.T) {
 	s, a, b := twoDevices(t)
 	id := a.add("note")
-	local, err := a.store().Get(t.Context(), id)
-	require.NoError(t, err)
+	local := storedRecord(t, a.store(), id)
 
 	st := a.state()
 	client, err := remote.Dial(testServerAddress, s.ca, s.dialOptions()...)
@@ -373,8 +360,7 @@ func TestSyncLostPushResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Pushed 1, pulled 1, conflicts 0.\n", a.sync(), "the same bytes are not a conflict")
-	got, err := a.store().Get(t.Context(), id)
-	require.NoError(t, err)
+	got := storedRecord(t, a.store(), id)
 	assert.Equal(t, storage.Record{ID: id, Revision: revision, Ciphertext: local.Ciphertext}, got)
 	b.sync()
 	assert.Equal(t, []string{"note"}, b.names(), "no copy on the server")
@@ -564,8 +550,17 @@ func TestLoginConfigPrecedence(t *testing.T) {
 	assert.Equal(t, "localhost:9443", b.state().ServerAddress)
 
 	// The flags override the saved values.
-	b.enter(firstPassword+"\n", "login", login, "--server", testServerAddress)
-	assert.Equal(t, testServerAddress, b.state().ServerAddress)
+	caCopy := filepath.Join(t.TempDir(), "ca.crt")
+	pem, err := os.ReadFile(s.ca)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(caCopy, pem, 0o600))
+	b.enter(firstPassword+"\n", "login", login, "--ca", caCopy)
+	assert.Equal(t, caCopy, b.state().CAPath)
+
+	// The local records belong to the saved server.
+	_, err = b.run(firstPassword+"\n", "login", login, "--server", testServerAddress)
+	assert.ErrorContains(t, err, "logged in to localhost:9443, run gophkeeper logout first")
+	assert.Equal(t, "localhost:9443", b.state().ServerAddress)
 }
 
 func TestUnlockWrongPasswordOnline(t *testing.T) {
@@ -586,4 +581,151 @@ func TestLoginServerUnavailable(t *testing.T) {
 	_, err := s.newClient(t).run(firstPassword+"\n", "login", newLogin(), "--ca", s.ca)
 
 	assert.ErrorIs(t, err, remote.ErrUnavailable)
+}
+
+// addRecord runs add on c and returns the ID of the new record.
+func (c *testClient) addRecord(stdin string, args ...string) string {
+	c.t.Helper()
+	stdout, err := c.run(stdin, append([]string{"add"}, args...)...)
+	require.NoError(c.t, err)
+	m := addedID.FindStringSubmatch(stdout)
+	require.NotNil(c.t, m, stdout)
+	assert.NotContains(c.t, stdout, offlineNotice, "add syncs at once")
+	return m[1]
+}
+
+func (c *testClient) show(id string, args ...string) string {
+	c.t.Helper()
+	stdout, err := c.run("", append([]string{"show", id}, args...)...)
+	require.NoError(c.t, err)
+	return stdout
+}
+
+func TestRecordsAcrossDevices(t *testing.T) {
+	_, a, b := twoDevices(t)
+	content := bytes.Repeat([]byte("0123456789abcdef"), 1<<16)
+	login := a.addRecord("", "login", "--name", "Mail", "--login", "alice", "--password=secret")
+	file := a.addRecord("", "file", "--name", "Report", "--file", writeFile(t, content))
+	assert.Empty(t, a.dirty())
+
+	b.sync()
+	assertLines(t, b.show(login[:8]), "Name: Mail", "Login: alice", "Password: secret")
+	out := filepath.Join(t.TempDir(), "report.pdf")
+	b.show(file, "--out", out)
+	got, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+
+	_, err = b.run("new secret\n", "edit", login, "--password", "-")
+	require.NoError(t, err)
+	assert.Empty(t, b.dirty(), "edit syncs at once")
+	a.sync()
+	assertLines(t, a.show(login), "Name: Mail", "Login: alice", "Password: new secret")
+
+	_, err = a.run("", "delete", file)
+	require.NoError(t, err)
+	b.sync()
+	list, err := b.run("", "list")
+	require.NoError(t, err)
+	assert.Contains(t, list, login)
+	assert.NotContains(t, list, file)
+}
+
+func TestRecordsOffline(t *testing.T) {
+	s, a, _ := twoDevices(t)
+	id := a.addRecord("", "text", "--name", "Note", "--text", "online")
+	s.srv.Stop()
+	// Retries are checked by TestSyncServerUnavailable; here they only take
+	// time.
+	a.app.dialOptions = append(a.app.dialOptions, grpc.WithDisableRetry())
+
+	stdout, err := a.run("", "add", "text", "--name", "Offline note", "--text", "offline")
+	require.NoError(t, err, "a change is saved without the server")
+	assert.Contains(t, stdout, offlineNotice)
+	stdout, err = a.run("", "edit", id, "--text", "changed offline")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, offlineNotice)
+
+	assert.Len(t, a.dirty(), 2)
+	list, err := a.run("", "list")
+	require.NoError(t, err)
+	assert.Contains(t, list, "Offline note")
+	assertLines(t, a.show(id), "changed offline")
+	_, err = a.run("", "sync")
+	assert.Equal(t, errSavedLocally.Error(), err.Error(), "a short message without gRPC details")
+}
+
+// TestSyncRecordLostOnServer has a local change based on a revision the
+// server does not have, as after a restore of the server from a backup.
+func TestSyncRecordLostOnServer(t *testing.T) {
+	_, a, b := twoDevices(t)
+	id := uuid.New()
+	const lostRevision = 99
+	ciphertext, err := records.Seal(a.keys().Data, id, recordpb.Record_builder{
+		Name: "lost", Text: recordpb.Text_builder{Content: "x"}.Build(),
+	}.Build())
+	require.NoError(t, err)
+	require.NoError(t, a.store().ApplyRemote(t.Context(), storage.Record{ID: id, Revision: lostRevision, Ciphertext: ciphertext}))
+	a.save(id, "lost and changed")
+
+	assert.Equal(t, "Pushed 1, pulled 1, conflicts 0.\n", a.sync(), "pushed again as a new record")
+	assert.Empty(t, a.dirty())
+	b.sync()
+	assert.Equal(t, []string{"lost and changed"}, b.names())
+}
+
+// TestSyncRecordKeepsChanging deletes the record on the server before every
+// push of a: each push meets a newer tombstone and is sent again.
+func TestSyncRecordKeepsChanging(t *testing.T) {
+	s, a, b := twoDevices(t)
+	id := a.add("note")
+	a.sync()
+	a.save(id, "note by a")
+
+	st := b.state()
+	other, err := remote.Dial(testServerAddress, s.ca, s.dialOptions()...)
+	require.NoError(t, err)
+	defer other.Close()
+	other.Resume(st.Login, b.keys().Login, st.Token)
+	var pushes int
+	deleteFirst := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if method == pb.Vault_Push_FullMethodName {
+			pushes++
+			// Not ctx: it carries the token of a in its metadata.
+			page, _, err := other.Pull(t.Context(), 0)
+			require.NoError(t, err)
+			current := page[slices.IndexFunc(page, func(r storage.Record) bool { return r.ID == id })]
+			_, err = other.Push(t.Context(), storage.Record{ID: id, Revision: current.Revision, Deleted: true})
+			require.NoError(t, err)
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+	a.app.dialOptions = append(a.app.dialOptions, grpc.WithUnaryInterceptor(deleteFirst))
+
+	_, err = a.run("", "sync")
+
+	assert.ErrorContains(t, err, "keeps changing on the server")
+	assert.Equal(t, 3, pushes)
+	assert.Len(t, a.dirty(), 1, "the change waits for the next sync")
+}
+
+// TestUntrustedServer checks that a server certificate not signed by the CA
+// gives its own error, not the one of a server that is down.
+func TestUntrustedServer(t *testing.T) {
+	s := startServer(t)
+	otherCA := tlstest.New(t).CertFile
+
+	_, err := s.newClient(t).run(firstPassword+"\n", "login", newLogin(), "--ca", otherCA)
+	assert.ErrorIs(t, err, remote.ErrTLS, "login")
+
+	a := s.newClient(t)
+	a.register(s, newLogin(), firstPassword)
+	require.NoError(t, a.store().UpdateState(t.Context(), func(st *storage.State) { st.CAPath = otherCA }))
+	_, err = a.run("", "add", "text", "--name", "Note", "--text", "x")
+	assert.ErrorIs(t, err, remote.ErrTLS, "a change is saved, but the user must see the failure")
+	assert.ErrorContains(t, err, "saved locally, but sync failed")
+	assert.Len(t, a.dirty(), 1)
+	_, err = a.run("", "sync")
+	assert.ErrorIs(t, err, remote.ErrTLS)
+	assert.NotErrorIs(t, err, remote.ErrUnavailable)
 }

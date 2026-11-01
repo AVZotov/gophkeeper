@@ -83,7 +83,9 @@ tasks:
   cover:
     desc: Run tests and print coverage per function and in total, without generated code
     cmds:
-      - go test -count=1 -coverprofile=coverage.out ./...
+      # -coverpkg counts the code a package covers in other packages too: the
+      # end-to-end tests of the client cover remote and vaultsync.
+      - go test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
       - grep -v '\.pb\.go:' coverage.out > coverage.src.out
       - go tool cover -func=coverage.src.out
 

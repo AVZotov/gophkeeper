@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"uuid"
 
-	"google.golang.org/protobuf/proto"
-
-	"github.com/AVZotov/gophkeeper/internal/client/recordpb"
+	"github.com/AVZotov/gophkeeper/internal/client/records"
 	"github.com/AVZotov/gophkeeper/internal/client/remote"
 	"github.com/AVZotov/gophkeeper/internal/client/storage"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
@@ -72,6 +70,12 @@ func (s *syncer) push(ctx context.Context, r storage.Record) error {
 			r.Revision = revision
 			return s.store.MarkPushed(ctx, pushed, r)
 		}
+		if errors.Is(err, remote.ErrRecordNotFound) {
+			// The server lost the record, for example restored from an older
+			// backup: the local change brings it back as a new one.
+			r.Revision = 0
+			continue
+		}
 		conflict, ok := errors.AsType[*remote.ConflictError](err)
 		if !ok {
 			return err
@@ -103,32 +107,26 @@ func (s *syncer) push(ctx context.Context, r storage.Record) error {
 // copy is saved before the local change is replaced, so the change is not
 // lost if the sync stops between the two.
 func (s *syncer) copyConflict(ctx context.Context, pushed, current storage.Record) error {
-	plain, err := vaultcrypto.DecryptRecord(s.key, pushed.ID, pushed.Ciphertext)
+	rec, err := records.Open(s.key, pushed.ID, pushed.Ciphertext)
 	if err != nil {
 		return fmt.Errorf("conflict copy: %w", err)
 	}
-	var rec recordpb.Record
-	if err := proto.Unmarshal(plain, &rec); err != nil {
-		return fmt.Errorf("conflict copy of record %s: %w", pushed.ID, err)
-	}
 	rec.SetName(rec.GetName() + ConflictSuffix)
-	plain, err = proto.Marshal(&rec)
+	// The record ID is bound to the ciphertext, so the copy is encrypted
+	// anew for its own ID.
+	id := uuid.New()
+	ciphertext, err := records.Seal(s.key, id, rec)
 	if err != nil {
 		return fmt.Errorf("conflict copy of record %s: %w", pushed.ID, err)
 	}
-
-	// The record ID is bound to the ciphertext, so the copy is encrypted
-	// anew for its own ID.
-	cp := storage.Record{ID: uuid.New()}
-	cp.Ciphertext = vaultcrypto.EncryptRecord(s.key, cp.ID, plain)
-	if err := s.store.SaveLocal(ctx, cp.ID, false, cp.Ciphertext); err != nil {
+	if err := s.store.SaveLocal(ctx, id, false, ciphertext); err != nil {
 		return err
 	}
 	if err := s.store.MarkPushed(ctx, pushed, current); err != nil {
 		return err
 	}
 	s.result.Conflicts++
-	return s.push(ctx, cp)
+	return s.push(ctx, storage.Record{ID: id, Ciphertext: ciphertext})
 }
 
 // pull saves the records changed on the server after the last revision
@@ -140,20 +138,20 @@ func (s *syncer) pull(ctx context.Context) error {
 	}
 	since := st.LastRevision
 	for {
-		records, hasMore, err := s.client.Pull(ctx, since)
+		page, hasMore, err := s.client.Pull(ctx, since)
 		if err != nil {
 			return err
 		}
-		for _, r := range records {
+		for _, r := range page {
 			if err := s.store.ApplyRemote(ctx, r); err != nil {
 				return err
 			}
 		}
-		if len(records) == 0 {
+		if len(page) == 0 {
 			return nil
 		}
-		s.result.Pulled += len(records)
-		since = records[len(records)-1].Revision
+		s.result.Pulled += len(page)
+		since = page[len(page)-1].Revision
 		if err := s.store.UpdateState(ctx, func(st *storage.State) { st.LastRevision = since }); err != nil {
 			return err
 		}

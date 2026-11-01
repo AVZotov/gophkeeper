@@ -37,23 +37,12 @@ func newChangePasswordCmd(a app) *cobra.Command {
 // wrong or the server rejects the change.
 func changePassword(cmd *cobra.Command, a app) error {
 	ctx := cmd.Context()
-	cfg, err := loadConfig()
+	v, err := a.openVault(ctx)
 	if err != nil {
 		return err
 	}
-	store, err := a.openStore(ctx)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	st, err := loggedIn(ctx, store)
-	if err != nil {
-		return err
-	}
-	path, keys, err := a.openSession(cfg)
-	if err != nil {
-		return err
-	}
+	defer v.Close()
+	st, keys := v.state, v.keys
 
 	// An unlocked terminal is not enough to change the password.
 	current, err := readPassword(cmd, currentPasswordPrompt)
@@ -81,7 +70,7 @@ func changePassword(cmd *cobra.Command, a app) error {
 	}
 	envelope := vaultcrypto.SealEnvelope(wrapKey, keys.Data)
 
-	client, err := a.dialSaved(cfg, st)
+	client, err := a.dialSaved(v.cfg, st)
 	if err != nil {
 		return err
 	}
@@ -93,17 +82,17 @@ func changePassword(cmd *cobra.Command, a app) error {
 
 	// The server has the new password now. The state goes first: unlock needs
 	// it, and the session and the token can be got again with the password.
-	err = store.UpdateState(ctx, func(st *storage.State) { st.Salt, st.Envelope = salt, envelope })
+	err = v.store.UpdateState(ctx, func(st *storage.State) { st.Salt, st.Envelope = salt, envelope })
 	if err != nil {
 		return err
 	}
 	keys.Login = loginKey
-	if err := session.Update(path, cfg.Session, keys, time.Now()); err != nil {
+	if err := session.Update(v.sessionPath, v.cfg.Session, keys, time.Now()); err != nil {
 		return err
 	}
 	// The change revoked the token.
 	if _, err := client.Login(ctx, st.Login, loginKey); err != nil {
 		return fmt.Errorf("log in with the new password: %w", err)
 	}
-	return saveToken(ctx, store, client, st.Token)
+	return saveToken(ctx, v.store, client, st.Token)
 }
