@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
+	"github.com/AVZotov/gophkeeper/internal/server/rpcerr"
 	"github.com/AVZotov/gophkeeper/internal/server/storage"
 )
 
@@ -48,7 +49,9 @@ type UserStore interface {
 }
 
 // Service implements the Auth gRPC service and checks tokens for the other
-// services with [Service.UnaryInterceptor]. It is safe for concurrent use.
+// services: [Service.TapHandle] before the message of a call is read and
+// [Service.UnaryInterceptor] for revoked tokens. It is safe for concurrent
+// use.
 type Service struct {
 	pb.UnimplementedAuthServer
 
@@ -86,7 +89,7 @@ func NewService(users UserStore, secret []byte, log *slog.Logger) (*Service, err
 // GetSalt returns the user's salt, or a fake one if the login is unknown.
 // Returns InvalidArgument if the login is invalid.
 func (s *Service) GetSalt(ctx context.Context, req *pb.GetSaltRequest) (*pb.GetSaltResponse, error) {
-	if err := invalid(checkLogin(req.GetLogin())); err != nil {
+	if err := rpcerr.InvalidArgument(checkLogin(req.GetLogin())); err != nil {
 		return nil, err
 	}
 	salt := fakeSalt(s.fakeSaltKey, req.GetLogin())
@@ -95,7 +98,7 @@ func (s *Service) GetSalt(ctx context.Context, req *pb.GetSaltRequest) (*pb.GetS
 	case err == nil:
 		salt = u.Salt
 	case !errors.Is(err, storage.ErrUserNotFound):
-		return nil, s.internal(ctx, "get salt", err)
+		return nil, rpcerr.Internal(ctx, s.log, "get salt", err)
 	}
 	return pb.GetSaltResponse_builder{Salt: salt}.Build(), nil
 }
@@ -103,7 +106,7 @@ func (s *Service) GetSalt(ctx context.Context, req *pb.GetSaltRequest) (*pb.GetS
 // Register creates a user. Returns InvalidArgument if the login is invalid
 // or a field has the wrong size, and AlreadyExists if the login is taken.
 func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	err := invalid(
+	err := rpcerr.InvalidArgument(
 		checkLogin(req.GetLogin()),
 		checkSize("salt", req.GetSalt(), saltSize),
 		checkSize("login key", req.GetLoginKey(), loginKeySize),
@@ -122,7 +125,7 @@ func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 		return nil, status.Error(codes.AlreadyExists, "login is taken")
 	}
 	if err != nil {
-		return nil, s.internal(ctx, "register", err)
+		return nil, rpcerr.Internal(ctx, s.log, "register", err)
 	}
 	return pb.RegisterResponse_builder{}.Build(), nil
 }
@@ -134,7 +137,7 @@ func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 // wrong. The two cases look the same, so the answer does not show whether
 // the user exists.
 func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
-	err := invalid(
+	err := rpcerr.InvalidArgument(
 		checkLogin(req.GetLogin()),
 		checkSize("login key", req.GetLoginKey(), loginKeySize),
 	)
@@ -153,7 +156,7 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 		return nil, errWrong
 	}
 	if err != nil {
-		return nil, s.internal(ctx, "login", err)
+		return nil, rpcerr.Internal(ctx, s.log, "login", err)
 	}
 	if !checkLoginKey(req.GetLoginKey(), u.LoginKeyHash) {
 		return nil, errWrong
@@ -161,7 +164,7 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 
 	token, err := issueToken(s.tokenKey, u.ID, now)
 	if err != nil {
-		return nil, s.internal(ctx, "issue token", err)
+		return nil, rpcerr.Internal(ctx, s.log, "issue token", err)
 	}
 	return pb.LoginResponse_builder{Token: token, Envelope: u.Envelope}.Build(), nil
 }
@@ -170,11 +173,11 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 // a token and the current login key. Returns InvalidArgument if a field has
 // the wrong size and Unauthenticated if the current login key is wrong.
 func (s *Service) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequest) (*pb.ChangePasswordResponse, error) {
-	id, ok := userIDFrom(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "missing token")
+	id, err := RequireUserID(ctx)
+	if err != nil {
+		return nil, err
 	}
-	err := invalid(
+	err = rpcerr.InvalidArgument(
 		checkSize("old login key", req.GetOldLoginKey(), loginKeySize),
 		checkSize("new salt", req.GetNewSalt(), saltSize),
 		checkSize("new login key", req.GetNewLoginKey(), loginKeySize),
@@ -186,7 +189,7 @@ func (s *Service) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequ
 
 	u, err := s.users.UserByID(ctx, id)
 	if err != nil {
-		return nil, s.internal(ctx, "change password", err)
+		return nil, rpcerr.Internal(ctx, s.log, "change password", err)
 	}
 	if !checkLoginKey(req.GetOldLoginKey(), u.LoginKeyHash) {
 		return nil, status.Error(codes.Unauthenticated, "wrong login key")
@@ -198,16 +201,9 @@ func (s *Service) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequ
 		Envelope:     req.GetNewEnvelope(),
 	}, time.Now())
 	if err != nil {
-		return nil, s.internal(ctx, "change password", err)
+		return nil, rpcerr.Internal(ctx, s.log, "change password", err)
 	}
 	return pb.ChangePasswordResponse_builder{}.Build(), nil
-}
-
-// internal logs err and returns a gRPC error that tells the client nothing
-// about it.
-func (s *Service) internal(ctx context.Context, op string, err error) error {
-	s.log.ErrorContext(ctx, op+" failed", "error", err)
-	return status.Error(codes.Internal, "internal error")
 }
 
 // hashLoginKey returns the hash of the login key kept in the storage. The
@@ -221,15 +217,6 @@ func hashLoginKey(loginKey []byte) []byte {
 // constant time.
 func checkLoginKey(loginKey, hash []byte) bool {
 	return subtle.ConstantTimeCompare(hashLoginKey(loginKey), hash) == 1
-}
-
-// invalid returns InvalidArgument listing the failed checks, or nil if all
-// passed.
-func invalid(checks ...error) error {
-	if err := errors.Join(checks...); err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	return nil
 }
 
 // checkLogin returns an error if the login is empty, longer than

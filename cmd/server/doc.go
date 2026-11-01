@@ -1,6 +1,6 @@
 // Command server is the GophKeeper server. It stores encrypted user records
-// and syncs them between the owner's clients. For now it serves only the
-// Auth service, over TLS only.
+// and syncs them between the owner's clients. It serves the Auth and Vault
+// services, over TLS only.
 //
 // Configuration comes from flags and environment variables; a variable
 // overrides its flag:

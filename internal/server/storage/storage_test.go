@@ -54,7 +54,7 @@ func runTests(m *testing.M) (int, error) {
 // newStore returns the shared store with all tables emptied.
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	_, err := testStore.pool.Exec(t.Context(), `TRUNCATE users`)
+	_, err := testStore.pool.Exec(t.Context(), `TRUNCATE users, records`)
 	require.NoError(t, err)
 	return testStore
 }

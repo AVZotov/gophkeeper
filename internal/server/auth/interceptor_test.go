@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/tap"
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
 	"github.com/AVZotov/gophkeeper/internal/server/storage"
@@ -35,16 +36,27 @@ func withAuthorization(ctx context.Context, value string) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", value))
 }
 
-// intercept runs the interceptor for method and reports whether the handler
-// was called and with which user ID.
+// intercept runs a call of method through [Service.TapHandle] and
+// [Service.UnaryInterceptor], as the server does, and reports whether the
+// handler was called and with which user ID.
 func intercept(ctx context.Context, s *Service, method string) (int64, bool, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	ctx, err := s.TapHandle(ctx, &tap.Info{FullMethodName: method, Header: md})
+	if err != nil {
+		return 0, false, err
+	}
+	return interceptOnly(ctx, s, method)
+}
+
+// interceptOnly runs [Service.UnaryInterceptor] alone, like intercept.
+func interceptOnly(ctx context.Context, s *Service, method string) (int64, bool, error) {
 	var (
 		gotID     int64
 		gotCalled bool
 	)
 	handler := func(ctx context.Context, _ any) (any, error) {
 		gotCalled = true
-		gotID, _ = userIDFrom(ctx)
+		gotID, _ = UserIDFrom(ctx)
 		return nil, nil
 	}
 	_, err := s.UnaryInterceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, handler)
@@ -176,6 +188,35 @@ func TestInterceptorIPLimit(t *testing.T) {
 	}
 	assert.Equal(t, codes.ResourceExhausted, status.Code(call("2001:db8::2", pb.Auth_Login_FullMethodName)),
 		"addresses in one /64 share the limit")
+}
+
+// TestTapHandleNoStorage checks that TapHandle decides without the storage:
+// the storage is down, yet a valid token passes and an invalid one gets
+// Unauthenticated, not Internal.
+func TestTapHandleNoStorage(t *testing.T) {
+	s := newTestService(t, &fakeStore{err: errStoreDown})
+	token, err := issueToken(s.tokenKey, 1, time.Now())
+	require.NoError(t, err)
+	tapCall := func(value string) error {
+		_, err := s.TapHandle(t.Context(), &tap.Info{
+			FullMethodName: protectedMethod,
+			Header:         metadata.Pairs("authorization", value),
+		})
+		return err
+	}
+
+	assert.NoError(t, tapCall(bearerPrefix+token))
+	assert.Equal(t, codes.Unauthenticated, status.Code(tapCall(bearerPrefix+"not-a-jwt")))
+}
+
+func TestInterceptorWithoutTapHandle(t *testing.T) {
+	s := newInterceptorService(t, time.Now().Add(-time.Hour))
+	token, err := issueToken(s.tokenKey, 1, time.Now())
+	require.NoError(t, err)
+
+	_, called, err := interceptOnly(withAuthorization(t.Context(), bearerPrefix+token), s, protectedMethod)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err), "a call that skipped TapHandle must be rejected")
+	assert.False(t, called)
 }
 
 func TestInterceptorStoreError(t *testing.T) {

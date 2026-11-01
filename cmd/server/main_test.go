@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/big"
 	"net"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,12 +32,14 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
 	"github.com/AVZotov/gophkeeper/internal/pgtest"
 	"github.com/AVZotov/gophkeeper/internal/server/auth"
 	"github.com/AVZotov/gophkeeper/internal/server/storage"
+	"github.com/AVZotov/gophkeeper/internal/server/vault"
 )
 
 // bufSize is the buffer of the in-memory connection.
@@ -129,26 +133,33 @@ func startServer(t *testing.T, tc testCert) *bufconn.Listener {
 	store, err := storage.Open(t.Context(), testDSN)
 	require.NoError(t, err)
 	t.Cleanup(store.Close)
-	svc, err := auth.NewService(store, mustHexSecret(t, testSecretHex), slog.New(slog.DiscardHandler))
+	log := slog.New(slog.DiscardHandler)
+	authSvc, err := auth.NewService(store, mustHexSecret(t, testSecretHex), log)
 	require.NoError(t, err)
 
-	srv := newGRPCServer(tc.cert, svc)
+	srv := newGRPCServer(tc.cert, authSvc, vault.NewService(store, log))
 	lis := bufconn.Listen(bufSize)
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 	return lis
 }
 
-func dial(t *testing.T, lis *bufconn.Listener, creds credentials.TransportCredentials) pb.AuthClient {
+// dial connects to the server on lis, accepting messages as large as the
+// server does.
+func dial(t *testing.T, lis *bufconn.Listener, creds credentials.TransportCredentials) *grpc.ClientConn {
 	t.Helper()
 	conn, err := grpc.NewClient("passthrough:///localhost",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
 		}),
-		grpc.WithTransportCredentials(creds))
+		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(vault.MaxMessageSize),
+			grpc.MaxCallSendMsgSize(vault.MaxMessageSize),
+		))
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
-	return pb.NewAuthClient(conn)
+	return conn
 }
 
 func clientTLS(tc testCert) credentials.TransportCredentials {
@@ -190,7 +201,7 @@ func waitNextSecond() {
 
 func TestAuthEndToEnd(t *testing.T) {
 	tc := newTestCert(t)
-	client := dial(t, startServer(t, tc), clientTLS(tc))
+	client := pb.NewAuthClient(dial(t, startServer(t, tc), clientTLS(tc)))
 	ctx := t.Context()
 	login := "alice-" + rand.Text()
 	first, second, third := newClientCredentials(), newClientCredentials(), newClientCredentials()
@@ -253,15 +264,119 @@ func TestAuthEndToEnd(t *testing.T) {
 	assert.NoError(t, err, "the new token must work")
 }
 
+// signIn registers a new user and returns the context of its calls with the
+// access token.
+func signIn(t *testing.T, client pb.AuthClient) context.Context {
+	t.Helper()
+	login := "alice-" + rand.Text()
+	c := newClientCredentials()
+	_, err := client.Register(t.Context(), pb.RegisterRequest_builder{
+		Login: login, Salt: c.salt, LoginKey: c.loginKey, Envelope: c.envelope,
+	}.Build())
+	require.NoError(t, err)
+	resp, err := client.Login(t.Context(), pb.LoginRequest_builder{Login: login, LoginKey: c.loginKey}.Build())
+	require.NoError(t, err)
+	return withToken(t.Context(), resp.GetToken())
+}
+
+// maxFileSize is the largest file a client stores.
+const maxFileSize = 10 << 20
+
+// newRecord returns a new record with plaintext encrypted as the client
+// does it.
+func newRecord(plaintext []byte) *pb.Record {
+	id := uuid.New()
+	return pb.Record_builder{
+		Id:         id[:],
+		Ciphertext: vaultcrypto.EncryptRecord(vaultcrypto.NewDataKey(), id, plaintext),
+	}.Build()
+}
+
+// pull calls Vault.Pull and returns the page.
+func pull(ctx context.Context, t *testing.T, client pb.VaultClient, since int64) *pb.PullResponse {
+	t.Helper()
+	resp, err := client.Pull(ctx, pb.PullRequest_builder{Since: since}.Build())
+	require.NoError(t, err)
+	return resp
+}
+
+func TestVaultEndToEnd(t *testing.T) {
+	tc := newTestCert(t)
+	conn := dial(t, startServer(t, tc), clientTLS(tc))
+	ctx := signIn(t, pb.NewAuthClient(conn))
+	client := pb.NewVaultClient(conn)
+
+	_, err := client.Pull(t.Context(), pb.PullRequest_builder{}.Build())
+	assert.Equal(t, codes.Unauthenticated, status.Code(err), "no token")
+
+	file := newRecord(make([]byte, maxFileSize))
+	note := newRecord([]byte("note"))
+	for i, r := range []*pb.Record{file, note} {
+		resp, err := client.Push(ctx, pb.PushRequest_builder{Id: r.GetId(), Ciphertext: r.GetCiphertext()}.Build())
+		require.NoError(t, err)
+		r.SetRevision(int64(i + 1))
+		assert.Equal(t, r.GetRevision(), resp.GetRevision())
+	}
+
+	page := pull(ctx, t, client, 0)
+	require.Len(t, page.GetRecords(), 1, "the file takes a page of its own")
+	assert.True(t, proto.Equal(file, page.GetRecords()[0]))
+	assert.True(t, page.GetHasMore())
+	page = pull(ctx, t, client, file.GetRevision())
+	require.Len(t, page.GetRecords(), 1)
+	assert.True(t, proto.Equal(note, page.GetRecords()[0]))
+	assert.False(t, page.GetHasMore())
+
+	// Another device did not see the file and creates a record with the same
+	// ID: the conflict brings the whole file back in the status details.
+	other := newRecord([]byte("other note"))
+	_, err = client.Push(ctx, pb.PushRequest_builder{Id: file.GetId(), Ciphertext: other.GetCiphertext()}.Build())
+	st := status.Convert(err)
+	require.Equal(t, codes.Aborted, st.Code(), "got %v", err)
+	require.Len(t, st.Details(), 1)
+	current, ok := st.Details()[0].(*pb.Record)
+	require.True(t, ok, "got %T", st.Details()[0])
+	assert.True(t, proto.Equal(file, current), "the details must hold the current record")
+
+	resp, err := client.Push(ctx, pb.PushRequest_builder{Id: file.GetId(), BaseRevision: file.GetRevision(), Deleted: true}.Build())
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), resp.GetRevision())
+
+	page = pull(ctx, t, client, note.GetRevision())
+	require.Len(t, page.GetRecords(), 1)
+	tombstone := pb.Record_builder{Id: file.GetId(), Revision: 3, Deleted: true}.Build()
+	assert.True(t, proto.Equal(tombstone, page.GetRecords()[0]), "got %v", page.GetRecords()[0])
+	assert.False(t, page.GetHasMore())
+}
+
+// TestVaultMessageTooLarge sends a message just over the limit. Without a
+// token it is rejected before its message is read: once read, it would be
+// rejected for its size.
+func TestVaultMessageTooLarge(t *testing.T) {
+	tc := newTestCert(t)
+	conn := dial(t, startServer(t, tc), clientTLS(tc))
+	client := pb.NewVaultClient(conn)
+	id := uuid.New()
+	req := pb.PushRequest_builder{Id: id[:], Ciphertext: make([]byte, vault.MaxMessageSize)}.Build()
+	// The client checks the size too; here the server has to.
+	noClientLimit := grpc.MaxCallSendMsgSize(math.MaxInt32)
+
+	_, err := client.Push(t.Context(), req, noClientLimit)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err), "got %v", err)
+
+	_, err = client.Push(signIn(t, pb.NewAuthClient(conn)), req, noClientLimit)
+	assert.Equal(t, codes.ResourceExhausted, status.Code(err), "got %v", err)
+}
+
 func TestServerRejectsPlaintext(t *testing.T) {
 	tc := newTestCert(t)
 	lis := startServer(t, tc)
 	req := pb.GetSaltRequest_builder{Login: "alice"}.Build()
 
-	_, err := dial(t, lis, clientTLS(tc)).GetSalt(t.Context(), req)
+	_, err := pb.NewAuthClient(dial(t, lis, clientTLS(tc))).GetSalt(t.Context(), req)
 	require.NoError(t, err, "the same call over TLS must work")
 
-	_, err = dial(t, lis, insecure.NewCredentials()).GetSalt(t.Context(), req)
+	_, err = pb.NewAuthClient(dial(t, lis, insecure.NewCredentials())).GetSalt(t.Context(), req)
 	assert.Equal(t, codes.Unavailable, status.Code(err))
 }
 

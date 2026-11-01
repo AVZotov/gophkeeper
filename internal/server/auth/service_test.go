@@ -294,7 +294,7 @@ func TestChangePassword(t *testing.T) {
 	s := newTestService(t, store)
 	_, err := s.Register(t.Context(), registerRequest("alice", 1))
 	require.NoError(t, err)
-	ctx := context.WithValue(t.Context(), userIDKey{}, int64(1))
+	ctx := WithUserID(t.Context(), 1)
 
 	req := func(oldKey byte) *pb.ChangePasswordRequest {
 		return pb.ChangePasswordRequest_builder{
@@ -349,7 +349,7 @@ func TestChangePasswordInvalidArgument(t *testing.T) {
 				NewEnvelope: filled(1, envelopeSize),
 			}.Build()
 			tt.modify(req)
-			ctx := context.WithValue(t.Context(), userIDKey{}, int64(1))
+			ctx := WithUserID(t.Context(), 1)
 
 			_, err := newTestService(t, newFakeStore()).ChangePassword(ctx, req)
 			assert.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -381,7 +381,7 @@ func TestGetSaltInvalidArgument(t *testing.T) {
 // TestStoreError checks that a storage failure gives Internal without
 // details and is logged.
 func TestStoreError(t *testing.T) {
-	ctx := context.WithValue(t.Context(), userIDKey{}, int64(1))
+	ctx := WithUserID(t.Context(), 1)
 	tests := []struct {
 		name string
 		call func(*Service) error
