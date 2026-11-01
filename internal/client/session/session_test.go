@@ -22,22 +22,21 @@ func testKeys() Keys {
 	return Keys{Data: vaultcrypto.NewDataKey(), Login: vaultcrypto.LoginKey(vaultcrypto.NewDataKey())}
 }
 
-// unlock starts a session in a new temporary directory, puts its key into
-// [EnvVar] and returns the path of the session file.
-func unlock(t *testing.T, keys Keys) string {
+// unlock starts a session in a new temporary directory and returns the path
+// of the session file and the session key.
+func unlock(t *testing.T, keys Keys) (path, key string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "session")
+	path = filepath.Join(t.TempDir(), "session")
 	key, err := Unlock(path, keys, testNow)
 	require.NoError(t, err)
-	t.Setenv(EnvVar, key)
-	return path
+	return path, key
 }
 
 func TestUnlockLoad(t *testing.T) {
 	keys := testKeys()
-	path := unlock(t, keys)
+	path, key := unlock(t, keys)
 
-	got, err := Load(path, testNow)
+	got, err := Load(path, key, testNow)
 	require.NoError(t, err)
 	assert.Equal(t, keys, got)
 }
@@ -64,8 +63,8 @@ func TestUnlockFails(t *testing.T) {
 
 func TestKeysNotOnDisk(t *testing.T) {
 	keys := testKeys()
-	path := unlock(t, keys)
-	sessionKey, err := base64.RawURLEncoding.DecodeString(os.Getenv(EnvVar))
+	path, key := unlock(t, keys)
+	sessionKey, err := base64.RawURLEncoding.DecodeString(key)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(path)
@@ -80,12 +79,12 @@ func TestKeysNotOnDisk(t *testing.T) {
 }
 
 func TestLoadExpiry(t *testing.T) {
-	path := unlock(t, testKeys())
+	path, key := unlock(t, testKeys())
 
-	_, err := Load(path, testNow.Add(TTL-time.Second))
+	_, err := Load(path, key, testNow.Add(TTL-time.Second))
 	require.NoError(t, err)
 
-	_, err = Load(path, testNow.Add(TTL))
+	_, err = Load(path, key, testNow.Add(TTL))
 	assert.ErrorIs(t, err, ErrLocked)
 	assert.ErrorContains(t, err, "expired")
 }
@@ -103,10 +102,9 @@ func TestLoadLocked(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := unlock(t, testKeys())
-			t.Setenv(EnvVar, tt.key)
+			path, _ := unlock(t, testKeys())
 
-			_, err := Load(path, testNow)
+			_, err := Load(path, tt.key, testNow)
 			assert.ErrorIs(t, err, ErrLocked)
 		})
 	}
@@ -130,52 +128,68 @@ func TestLoadTamperedFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := unlock(t, testKeys())
+			path, key := unlock(t, testKeys())
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(path, tt.modify(data), 0o600))
 
-			_, err = Load(path, testNow)
+			_, err = Load(path, key, testNow)
 			assert.ErrorIs(t, err, ErrLocked)
 		})
 	}
 }
 
 func TestLoadReadFails(t *testing.T) {
-	path := unlock(t, testKeys())
+	path, key := unlock(t, testKeys())
 	require.NoError(t, os.Remove(path))
 	require.NoError(t, os.Mkdir(path, 0o700))
 
-	_, err := Load(path, testNow)
+	_, err := Load(path, key, testNow)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrLocked)
 }
 
 func TestUnlockReplacesSession(t *testing.T) {
-	path := unlock(t, testKeys())
-	oldKey := os.Getenv(EnvVar)
+	path, oldKey := unlock(t, testKeys())
 
 	keys := testKeys()
 	newKey, err := Unlock(path, keys, testNow)
 	require.NoError(t, err)
 
-	_, err = Load(path, testNow)
+	_, err = Load(path, oldKey, testNow)
 	require.ErrorIs(t, err, ErrLocked, "old key")
-
-	t.Setenv(EnvVar, newKey)
-	got, err := Load(path, testNow)
+	got, err := Load(path, newKey, testNow)
 	require.NoError(t, err)
 	assert.Equal(t, keys, got)
-	assert.NotEqual(t, oldKey, newKey)
+}
+
+func TestUpdate(t *testing.T) {
+	path, key := unlock(t, testKeys())
+	keys := testKeys()
+
+	require.NoError(t, Update(path, key, keys, testNow.Add(time.Minute)))
+
+	got, err := Load(path, key, testNow)
+	require.NoError(t, err)
+	assert.Equal(t, keys, got, "the same key opens the new keys")
+	_, err = Load(path, key, testNow.Add(TTL))
+	assert.ErrorIs(t, err, ErrLocked, "the expiry is kept")
+
+	other := vaultcrypto.NewSessionKey()
+	err = Update(path, base64.RawURLEncoding.EncodeToString(other[:]), testKeys(), testNow)
+	assert.ErrorIs(t, err, ErrLocked, "wrong key")
+	got, err = Load(path, key, testNow)
+	require.NoError(t, err)
+	assert.Equal(t, keys, got, "a failed update keeps the session")
 }
 
 func TestLock(t *testing.T) {
-	path := unlock(t, testKeys())
+	path, key := unlock(t, testKeys())
 
 	require.NoError(t, Lock(path))
 	assert.NoFileExists(t, path)
 
-	_, err := Load(path, testNow)
+	_, err := Load(path, key, testNow)
 	assert.ErrorIs(t, err, ErrLocked)
 
 	assert.NoError(t, Lock(path), "lock without a session")

@@ -22,32 +22,6 @@ import (
 // idSize is the size of a record UUID in bytes.
 const idSize = len(uuid.UUID{})
 
-// Ciphertext size limit. A record holds a file of up to maxFileSize plus its
-// name and metadata; recordFieldsSize leaves room for them and for the
-// encryption overhead.
-const (
-	maxFileSize       = 10 << 20
-	recordFieldsSize  = 64 << 10
-	maxCiphertextSize = maxFileSize + recordFieldsSize
-)
-
-// A Pull page has at most pullPageRecords records, and their ciphertexts fit
-// into pullPageBytes, unless the first record alone is larger.
-const (
-	pullPageRecords = 1000
-	pullPageBytes   = 4 << 20
-)
-
-// recordOverhead bounds the encoded size of a Record in a Pull page or of a
-// PushRequest without the ciphertext bytes: the ID, the revision, the flag,
-// field tags and lengths.
-const recordOverhead = 64
-
-// MaxMessageSize is the largest Vault message: a full Pull page or a Push
-// with the largest ciphertext. The server and its clients must accept
-// messages of this size.
-const MaxMessageSize = max(maxCiphertextSize, pullPageBytes) + pullPageRecords*recordOverhead
-
 // RecordStore is the record storage the service needs. [storage.Store]
 // implements it.
 type RecordStore interface {
@@ -84,7 +58,7 @@ func (s *Service) Pull(ctx context.Context, req *pb.PullRequest) (*pb.PullRespon
 		return nil, status.Error(codes.InvalidArgument, "since is negative")
 	}
 
-	records, hasMore, err := s.records.PullRecords(ctx, owner, req.GetSince(), pullPageRecords, pullPageBytes)
+	records, hasMore, err := s.records.PullRecords(ctx, owner, req.GetSince(), pb.MaxPageRecords, pb.MaxPageBytes)
 	if err != nil {
 		return nil, rpcerr.Internal(ctx, s.log, "pull", err)
 	}
@@ -148,8 +122,8 @@ func checkPush(req *pb.PushRequest) []error {
 		errs = append(errs, errors.New("ciphertext of a deleted record must be empty"))
 	case !req.GetDeleted() && n == 0:
 		errs = append(errs, errors.New("ciphertext is empty"))
-	case n > maxCiphertextSize:
-		errs = append(errs, fmt.Errorf("ciphertext is %d bytes, more than %d", n, maxCiphertextSize))
+	case n > pb.MaxCiphertextSize:
+		errs = append(errs, fmt.Errorf("ciphertext is %d bytes, more than %d", n, pb.MaxCiphertextSize))
 	}
 	return errs
 }

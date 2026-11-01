@@ -45,8 +45,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 
 	// secure_delete overwrites deleted rows with zeros, so cleared data does
-	// not stay in free pages of the file.
-	dsn := path + "?_pragma=secure_delete(1)&_busy_timeout=" + strconv.Itoa(busyTimeout)
+	// not stay in free pages of the file. Immediate transactions take the
+	// write lock at the start, so a read-modify-write waits for another
+	// process instead of failing halfway.
+	dsn := path + "?_pragma=secure_delete(1)&_txlock=immediate&_busy_timeout=" + strconv.Itoa(busyTimeout)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -61,6 +63,23 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // Close closes the database. Returns an error if closing fails.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// inTx runs fn in a transaction and commits it if fn returns nil.
+func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 // migrate applies pending migrations.

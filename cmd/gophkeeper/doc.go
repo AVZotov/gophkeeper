@@ -3,9 +3,13 @@
 //
 // Usage:
 //
+//	gophkeeper register LOGIN [--server ADDRESS] [--ca FILE] [--raw]
+//	gophkeeper login LOGIN [--server ADDRESS] [--ca FILE] [--raw]
 //	gophkeeper unlock [--raw]
+//	gophkeeper change-password
+//	gophkeeper sync
 //	gophkeeper lock
-//	gophkeeper logout
+//	gophkeeper logout [--force]
 //	gophkeeper version
 //
 // The version and build date are set at build time with

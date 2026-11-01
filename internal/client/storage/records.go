@@ -68,14 +68,23 @@ func (s *Store) Dirty(ctx context.Context) ([]Record, error) {
 	return s.query(ctx, `SELECT `+recordColumns+` FROM records WHERE dirty = 1 ORDER BY id`)
 }
 
-// MarkPushed records that the server accepted pushed as revision. The record
-// stays dirty if it changed after pushed was read: that change is not on the
-// server yet, and its next push is based on revision. Returns
+// MarkPushed records that the server now has server for the record pushed
+// was read from: the record becomes server and is no longer dirty. It covers
+// both a push the server accepted and a conflict resolved by taking the
+// server version. If the record changed after pushed was read, that change
+// is kept and stays dirty, based on the server revision. Returns
 // [ErrRecordNotFound] if there is no such record.
-func (s *Store) MarkPushed(ctx context.Context, pushed Record, revision int64) error {
+func (s *Store) MarkPushed(ctx context.Context, pushed, server Record) error {
+	// SET expressions see the row as it was before the update.
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE records SET revision = ?, dirty = NOT (deleted = ? AND ciphertext = ?) WHERE id = ?`,
-		revision, pushed.Deleted, notNil(pushed.Ciphertext), pushed.ID[:])
+		`UPDATE records SET
+		   revision   = ?1,
+		   deleted    = iif(deleted = ?4 AND ciphertext = ?5, ?2, deleted),
+		   ciphertext = iif(deleted = ?4 AND ciphertext = ?5, ?3, ciphertext),
+		   dirty      = NOT (deleted = ?4 AND ciphertext = ?5)
+		 WHERE id = ?6`,
+		server.Revision, server.Deleted, notNil(server.Ciphertext),
+		pushed.Deleted, notNil(pushed.Ciphertext), pushed.ID[:])
 	if err != nil {
 		return fmt.Errorf("mark record %s pushed: %w", pushed.ID, err)
 	}

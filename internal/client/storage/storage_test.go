@@ -142,67 +142,95 @@ func TestListEmpty(t *testing.T) {
 	assert.Empty(t, list)
 }
 
+// accepted returns the server version of r after the server accepted it as
+// revision 9.
+func accepted(r Record) Record {
+	r.Revision, r.Dirty = 9, false
+	return r
+}
+
 func TestMarkPushed(t *testing.T) {
 	ctx := t.Context()
-
-	t.Run("clears dirty", func(t *testing.T) {
-		s, _ := openStore(t)
-		id := uuid.New()
-		require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v1")))
-		pushed, err := s.Get(ctx, id)
-		require.NoError(t, err)
-
-		require.NoError(t, s.MarkPushed(ctx, pushed, 9))
-
-		got, err := s.Get(ctx, id)
-		require.NoError(t, err)
-		assert.Equal(t, Record{ID: id, Revision: 9, Ciphertext: []byte("v1")}, got)
-	})
-
-	t.Run("clears dirty of a deleted record", func(t *testing.T) {
-		s, _ := openStore(t)
-		id := uuid.New()
-		require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: 2, Ciphertext: []byte("v1")}))
-		require.NoError(t, s.SaveLocal(ctx, id, true, nil))
-		pushed, err := s.Get(ctx, id)
-		require.NoError(t, err)
-
-		require.NoError(t, s.MarkPushed(ctx, pushed, 9))
-
-		got, err := s.Get(ctx, id)
-		require.NoError(t, err)
-		assert.Equal(t, Record{ID: id, Revision: 9, Deleted: true}, got)
-	})
-
+	serverVersion := Record{Revision: 9, Ciphertext: []byte("server")}
 	tests := []struct {
+		name string
+		// local is the record as it was read to be pushed.
+		local Record
+		// server returns the server version for the pushed record.
+		server func(pushed Record) Record
+		want   Record
+	}{
+		{
+			name:   "accepted change",
+			local:  Record{Ciphertext: []byte("v1")},
+			server: accepted,
+			want:   Record{Revision: 9, Ciphertext: []byte("v1")},
+		},
+		{
+			name:   "accepted delete",
+			local:  Record{Revision: 2, Deleted: true},
+			server: accepted,
+			want:   Record{Revision: 9, Deleted: true},
+		},
+		{
+			name:   "server version taken",
+			local:  Record{Revision: 2, Deleted: true},
+			server: func(Record) Record { return serverVersion },
+			want:   Record{Revision: 9, Ciphertext: []byte("server")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _ := openStore(t)
+			id := uuid.New()
+			tt.local.ID, tt.want.ID = id, id
+			require.NoError(t, s.ApplyRemote(ctx, Record{ID: id, Revision: tt.local.Revision, Ciphertext: []byte("old")}))
+			require.NoError(t, s.SaveLocal(ctx, id, tt.local.Deleted, tt.local.Ciphertext))
+			pushed, err := s.Get(ctx, id)
+			require.NoError(t, err)
+
+			require.NoError(t, s.MarkPushed(ctx, pushed, tt.server(pushed)))
+
+			got, err := s.Get(ctx, id)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	changes := []struct {
 		name       string
 		deleted    bool
 		ciphertext []byte
 	}{
-		{name: "changed after push", deleted: false, ciphertext: []byte("v2")},
-		{name: "deleted after push", deleted: true, ciphertext: nil},
+		{name: "changed after read", deleted: false, ciphertext: []byte("v2")},
+		{name: "deleted after read", deleted: true, ciphertext: nil},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name+" stays dirty", func(t *testing.T) {
-			s, _ := openStore(t)
-			id := uuid.New()
-			require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v1")))
-			pushed, err := s.Get(ctx, id)
-			require.NoError(t, err)
-			require.NoError(t, s.SaveLocal(ctx, id, tt.deleted, tt.ciphertext))
+	for _, change := range changes {
+		for _, server := range []struct {
+			name    string
+			version func(Record) Record
+		}{{"accepted", accepted}, {"server version", func(Record) Record { return serverVersion }}} {
+			t.Run(change.name+", "+server.name+": change stays dirty", func(t *testing.T) {
+				s, _ := openStore(t)
+				id := uuid.New()
+				require.NoError(t, s.SaveLocal(ctx, id, false, []byte("v1")))
+				pushed, err := s.Get(ctx, id)
+				require.NoError(t, err)
+				require.NoError(t, s.SaveLocal(ctx, id, change.deleted, change.ciphertext))
 
-			require.NoError(t, s.MarkPushed(ctx, pushed, 9))
+				require.NoError(t, s.MarkPushed(ctx, pushed, server.version(pushed)))
 
-			got, err := s.Get(ctx, id)
-			require.NoError(t, err)
-			assert.Equal(t, Record{ID: id, Revision: 9, Deleted: tt.deleted, Ciphertext: tt.ciphertext, Dirty: true}, got)
-		})
+				got, err := s.Get(ctx, id)
+				require.NoError(t, err)
+				assert.Equal(t, Record{ID: id, Revision: 9, Deleted: change.deleted, Ciphertext: change.ciphertext, Dirty: true}, got)
+			})
+		}
 	}
 
 	t.Run("not found", func(t *testing.T) {
 		s, _ := openStore(t)
-		err := s.MarkPushed(ctx, Record{ID: uuid.New(), Ciphertext: []byte("x")}, 1)
-		assert.ErrorIs(t, err, ErrRecordNotFound)
+		r := Record{ID: uuid.New(), Ciphertext: []byte("x")}
+		assert.ErrorIs(t, s.MarkPushed(ctx, r, accepted(r)), ErrRecordNotFound)
 	})
 }
 
@@ -267,6 +295,23 @@ func TestState(t *testing.T) {
 	got, err = s.State(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, second, got, "second save replaces the state")
+}
+
+func TestUpdateState(t *testing.T) {
+	s, _ := openStore(t)
+	ctx := t.Context()
+	update := func(st *State) { st.Token, st.LastRevision = "new", 5 }
+
+	require.ErrorIs(t, s.UpdateState(ctx, update), ErrNoState)
+
+	saved := State{Login: "alice", Salt: []byte("salt"), Envelope: []byte("envelope"), Token: "old", LastRevision: 1}
+	require.NoError(t, s.SaveState(ctx, saved))
+	require.NoError(t, s.UpdateState(ctx, update))
+
+	got, err := s.State(ctx)
+	require.NoError(t, err)
+	saved.Token, saved.LastRevision = "new", 5
+	assert.Equal(t, saved, got)
 }
 
 func TestStateIsRedacted(t *testing.T) {

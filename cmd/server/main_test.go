@@ -3,20 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"math"
-	"math/big"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -38,8 +31,10 @@ import (
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
 	"github.com/AVZotov/gophkeeper/internal/pgtest"
 	"github.com/AVZotov/gophkeeper/internal/server/auth"
+	"github.com/AVZotov/gophkeeper/internal/server/rpcserver"
 	"github.com/AVZotov/gophkeeper/internal/server/storage"
 	"github.com/AVZotov/gophkeeper/internal/server/vault"
+	"github.com/AVZotov/gophkeeper/internal/tlstest"
 )
 
 // bufSize is the buffer of the in-memory connection.
@@ -77,58 +72,9 @@ func runTests(m *testing.M) (int, error) {
 	return m.Run(), nil
 }
 
-// testCert is a self-signed certificate for localhost, in memory and in
-// files.
-type testCert struct {
-	cert     tls.Certificate
-	roots    *x509.CertPool
-	certFile string
-	keyFile  string
-}
-
-func newTestCert(t *testing.T) testCert {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "localhost"},
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(t, err)
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	require.NoError(t, err)
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	require.NoError(t, err)
-	roots := x509.NewCertPool()
-	require.True(t, roots.AppendCertsFromPEM(certPEM))
-
-	dir := t.TempDir()
-	tc := testCert{
-		cert:     cert,
-		roots:    roots,
-		certFile: filepath.Join(dir, "server.crt"),
-		keyFile:  filepath.Join(dir, "server.key"),
-	}
-	require.NoError(t, os.WriteFile(tc.certFile, certPEM, 0o600))
-	require.NoError(t, os.WriteFile(tc.keyFile, keyPEM, 0o600))
-	return tc
-}
-
 // startServer serves the real server with the test storage on an in-memory
 // listener.
-func startServer(t *testing.T, tc testCert) *bufconn.Listener {
+func startServer(t *testing.T, tc tlstest.Cert) *bufconn.Listener {
 	t.Helper()
 	store, err := storage.Open(t.Context(), testDSN)
 	require.NoError(t, err)
@@ -137,7 +83,7 @@ func startServer(t *testing.T, tc testCert) *bufconn.Listener {
 	authSvc, err := auth.NewService(store, mustHexSecret(t, testSecretHex), log)
 	require.NoError(t, err)
 
-	srv := newGRPCServer(tc.cert, authSvc, vault.NewService(store, log))
+	srv := rpcserver.New(tc.TLS, authSvc, vault.NewService(store, log))
 	lis := bufconn.Listen(bufSize)
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
@@ -154,16 +100,16 @@ func dial(t *testing.T, lis *bufconn.Listener, creds credentials.TransportCreden
 		}),
 		grpc.WithTransportCredentials(creds),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(vault.MaxMessageSize),
-			grpc.MaxCallSendMsgSize(vault.MaxMessageSize),
+			grpc.MaxCallRecvMsgSize(pb.MaxMessageSize),
+			grpc.MaxCallSendMsgSize(pb.MaxMessageSize),
 		))
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
 	return conn
 }
 
-func clientTLS(tc testCert) credentials.TransportCredentials {
-	return credentials.NewTLS(&tls.Config{RootCAs: tc.roots, ServerName: "localhost", MinVersion: tls.VersionTLS13})
+func clientTLS(tc tlstest.Cert) credentials.TransportCredentials {
+	return credentials.NewTLS(&tls.Config{RootCAs: tc.Roots, ServerName: "localhost", MinVersion: tls.VersionTLS13})
 }
 
 func withToken(ctx context.Context, token string) context.Context {
@@ -200,7 +146,7 @@ func waitNextSecond() {
 }
 
 func TestAuthEndToEnd(t *testing.T) {
-	tc := newTestCert(t)
+	tc := tlstest.New(t)
 	client := pb.NewAuthClient(dial(t, startServer(t, tc), clientTLS(tc)))
 	ctx := t.Context()
 	login := "alice-" + rand.Text()
@@ -279,9 +225,6 @@ func signIn(t *testing.T, client pb.AuthClient) context.Context {
 	return withToken(t.Context(), resp.GetToken())
 }
 
-// maxFileSize is the largest file a client stores.
-const maxFileSize = 10 << 20
-
 // newRecord returns a new record with plaintext encrypted as the client
 // does it.
 func newRecord(plaintext []byte) *pb.Record {
@@ -301,7 +244,7 @@ func pull(ctx context.Context, t *testing.T, client pb.VaultClient, since int64)
 }
 
 func TestVaultEndToEnd(t *testing.T) {
-	tc := newTestCert(t)
+	tc := tlstest.New(t)
 	conn := dial(t, startServer(t, tc), clientTLS(tc))
 	ctx := signIn(t, pb.NewAuthClient(conn))
 	client := pb.NewVaultClient(conn)
@@ -309,7 +252,7 @@ func TestVaultEndToEnd(t *testing.T) {
 	_, err := client.Pull(t.Context(), pb.PullRequest_builder{}.Build())
 	assert.Equal(t, codes.Unauthenticated, status.Code(err), "no token")
 
-	file := newRecord(make([]byte, maxFileSize))
+	file := newRecord(make([]byte, pb.MaxFileSize))
 	note := newRecord([]byte("note"))
 	for i, r := range []*pb.Record{file, note} {
 		resp, err := client.Push(ctx, pb.PushRequest_builder{Id: r.GetId(), Ciphertext: r.GetCiphertext()}.Build())
@@ -353,11 +296,11 @@ func TestVaultEndToEnd(t *testing.T) {
 // token it is rejected before its message is read: once read, it would be
 // rejected for its size.
 func TestVaultMessageTooLarge(t *testing.T) {
-	tc := newTestCert(t)
+	tc := tlstest.New(t)
 	conn := dial(t, startServer(t, tc), clientTLS(tc))
 	client := pb.NewVaultClient(conn)
 	id := uuid.New()
-	req := pb.PushRequest_builder{Id: id[:], Ciphertext: make([]byte, vault.MaxMessageSize)}.Build()
+	req := pb.PushRequest_builder{Id: id[:], Ciphertext: make([]byte, pb.MaxMessageSize)}.Build()
 	// The client checks the size too; here the server has to.
 	noClientLimit := grpc.MaxCallSendMsgSize(math.MaxInt32)
 
@@ -369,7 +312,7 @@ func TestVaultMessageTooLarge(t *testing.T) {
 }
 
 func TestServerRejectsPlaintext(t *testing.T) {
-	tc := newTestCert(t)
+	tc := tlstest.New(t)
 	lis := startServer(t, tc)
 	req := pb.GetSaltRequest_builder{Login: "alice"}.Build()
 
@@ -401,15 +344,15 @@ func (b *syncBuffer) String() string {
 
 // runArgs returns arguments for run with the test database and tc, and
 // sets the secret in the environment.
-func runArgs(t *testing.T, tc testCert) []string {
+func runArgs(t *testing.T, tc tlstest.Cert) []string {
 	t.Helper()
 	clearEnv(t)
 	t.Setenv("SERVER_SECRET", testSecretHex)
-	return []string{"-a", "127.0.0.1:0", "-d", testDSN, "-tls-cert", tc.certFile, "-tls-key", tc.keyFile}
+	return []string{"-a", "127.0.0.1:0", "-d", testDSN, "-tls-cert", tc.CertFile, "-tls-key", tc.KeyFile}
 }
 
 func TestRunStopsGracefully(t *testing.T) {
-	args := runArgs(t, newTestCert(t))
+	args := runArgs(t, tlstest.New(t))
 	var logs syncBuffer
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -429,7 +372,7 @@ func TestRunStopsGracefully(t *testing.T) {
 }
 
 func TestRunFails(t *testing.T) {
-	tc := newTestCert(t)
+	tc := tlstest.New(t)
 	// Each case overrides one of the working arguments: a later flag wins.
 	tests := []struct {
 		name     string

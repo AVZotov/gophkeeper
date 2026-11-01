@@ -10,13 +10,13 @@ import (
 
 // newLockCmd returns the lock command. Like bw lock of Bitwarden CLI, it
 // ends the session.
-func newLockCmd(f files) *cobra.Command {
+func newLockCmd(a app) *cobra.Command {
 	return &cobra.Command{
 		Use:   "lock",
 		Short: "Lock the vault: end the session",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := lock(f); err != nil {
+			if err := lock(a); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Your vault is locked.")
@@ -26,21 +26,31 @@ func newLockCmd(f files) *cobra.Command {
 }
 
 // newLogoutCmd returns the logout command. It ends the session and deletes
-// the local records and the state.
-func newLogoutCmd(f files) *cobra.Command {
-	return &cobra.Command{
+// the local records and the state. It refuses while local changes are not
+// synced, unless forced.
+func newLogoutCmd(a app) *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "logout",
 		Short: "Log out: end the session and delete local data",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := lock(f); err != nil {
-				return err
-			}
-			store, err := f.openStore(cmd.Context())
+			store, err := a.openStore(cmd.Context())
 			if err != nil {
 				return err
 			}
 			defer store.Close()
+
+			dirty, err := store.Dirty(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if len(dirty) > 0 && !force {
+				return fmt.Errorf("%d local changes are not synced: run gophkeeper sync, or gophkeeper logout --force to delete them", len(dirty))
+			}
+			if err := lock(a); err != nil {
+				return err
+			}
 			if err := store.Clear(cmd.Context()); err != nil {
 				return fmt.Errorf("clear local database: %w", err)
 			}
@@ -48,11 +58,13 @@ func newLogoutCmd(f files) *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "delete local changes that are not synced")
+	return cmd
 }
 
 // lock ends the session.
-func lock(f files) error {
-	path, err := f.path(sessionFile)
+func lock(a app) error {
+	path, err := a.path(sessionFile)
 	if err != nil {
 		return err
 	}

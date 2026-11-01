@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math"
 	"testing"
 	"uuid"
 
@@ -80,7 +79,7 @@ func TestPush(t *testing.T) {
 		req  *pb.PushRequest
 	}{
 		{"new record", pushRequest(0, []byte("ciphertext"))},
-		{"largest ciphertext", pushRequest(3, filled(2, maxCiphertextSize))},
+		{"largest ciphertext", pushRequest(3, filled(2, pb.MaxCiphertextSize))},
 		{"tombstone", pb.PushRequest_builder{Id: filled(1, idSize), BaseRevision: 3, Deleted: true}.Build()},
 	}
 	for _, tt := range tests {
@@ -110,7 +109,7 @@ func TestPushInvalidArgument(t *testing.T) {
 		{"long id", func(r *pb.PushRequest) { r.SetId(filled(1, idSize+1)) }},
 		{"negative base revision", func(r *pb.PushRequest) { r.SetBaseRevision(-1) }},
 		{"empty ciphertext", func(r *pb.PushRequest) { r.SetCiphertext(nil) }},
-		{"ciphertext too large", func(r *pb.PushRequest) { r.SetCiphertext(filled(1, maxCiphertextSize+1)) }},
+		{"ciphertext too large", func(r *pb.PushRequest) { r.SetCiphertext(filled(1, pb.MaxCiphertextSize+1)) }},
 		{"tombstone with ciphertext", func(r *pb.PushRequest) { r.SetDeleted(true) }},
 	}
 	for _, tt := range tests {
@@ -158,7 +157,7 @@ func TestPull(t *testing.T) {
 	for i, r := range records {
 		assert.True(t, proto.Equal(toProto(r), resp.GetRecords()[i]), "record %d: got %v", i, resp.GetRecords()[i])
 	}
-	assert.Equal(t, []pullCall{{testOwner, 3, pullPageRecords, pullPageBytes}}, store.pulls)
+	assert.Equal(t, []pullCall{{testOwner, 3, pb.MaxPageRecords, pb.MaxPageBytes}}, store.pulls)
 }
 
 func TestPullInvalidArgument(t *testing.T) {
@@ -201,45 +200,6 @@ func TestStoreError(t *testing.T) {
 			assert.Equal(t, codes.Internal, status.Code(err))
 			assert.NotContains(t, err.Error(), errStoreDown.Error(), "the client must not see storage details")
 			assert.Contains(t, logs.String(), errStoreDown.Error())
-		})
-	}
-}
-
-// TestMaxMessageSize checks that the largest messages the limits allow fit
-// into MaxMessageSize.
-func TestMaxMessageSize(t *testing.T) {
-	record := func(ciphertextSize int) *pb.Record {
-		return pb.Record_builder{
-			Id:         filled(1, idSize),
-			Revision:   math.MaxInt64,
-			Deleted:    true,
-			Ciphertext: make([]byte, ciphertextSize),
-		}.Build()
-	}
-	page := func(first, rest int) *pb.PullResponse {
-		records := []*pb.Record{record(first)}
-		for range pullPageRecords - 1 {
-			records = append(records, record(rest))
-		}
-		return pb.PullResponse_builder{Records: records, HasMore: true}.Build()
-	}
-
-	tests := []struct {
-		name string
-		msg  proto.Message
-	}{
-		{"push", pb.PushRequest_builder{
-			Id:           filled(1, idSize),
-			BaseRevision: math.MaxInt64,
-			Deleted:      true,
-			Ciphertext:   make([]byte, maxCiphertextSize),
-		}.Build()},
-		{"page of the largest record", page(maxCiphertextSize, 0)},
-		{"page of small records", page(pullPageBytes/pullPageRecords, pullPageBytes/pullPageRecords)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.LessOrEqual(t, proto.Size(tt.msg), MaxMessageSize)
 		})
 	}
 }
