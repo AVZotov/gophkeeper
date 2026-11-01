@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ func TestVersionCmd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			cmd := newRootCmd("v1.2.3", "2026-10-19T10:00:00Z")
+			cmd := newRootCmd("v1.2.3", "2026-10-19T10:00:00Z", testDir(t))
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&stderr)
 			cmd.SetArgs(tt.args)

@@ -1,6 +1,6 @@
 // Package vaultcrypto is the client-side cryptography of GophKeeper: it
 // derives keys from the master password, seals the data key into the
-// envelope and encrypts records.
+// envelope, encrypts records and the keys of an unlocked session.
 //
 // Keys are distinct types, so one cannot be passed where another is
 // expected. fmt and slog print them as [REDACTED].
@@ -51,6 +51,10 @@ const (
 // envelopeSize is the size of a sealed data key: nonce, key and GCM tag.
 const envelopeSize = nonceSize + KeySize + tagSize
 
+// sessionSize is the size of the keys sealed by [SealSession]: nonce, data
+// key, login key and GCM tag.
+const sessionSize = nonceSize + 2*KeySize + tagSize
+
 const redacted = "[REDACTED]"
 
 var (
@@ -71,6 +75,10 @@ type WrapKey [KeySize]byte
 // LoginKey proves to the server that the user knows the password. See
 // [DeriveKeys].
 type LoginKey [KeySize]byte
+
+// SessionKey encrypts the data key and the login key of an unlocked vault
+// between commands. See [SealSession].
+type SessionKey [KeySize]byte
 
 // String hides the key.
 func (DataKey) String() string { return redacted }
@@ -99,6 +107,15 @@ func (LoginKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
 // LogValue hides the key in slog output.
 func (LoginKey) LogValue() slog.Value { return slog.StringValue(redacted) }
 
+// String hides the key.
+func (SessionKey) String() string { return redacted }
+
+// Format hides the key for every fmt verb.
+func (SessionKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
+
+// LogValue hides the key in slog output.
+func (SessionKey) LogValue() slog.Value { return slog.StringValue(redacted) }
+
 // NewSalt returns a random salt of [SaltSize] bytes for [DeriveKeys].
 func NewSalt() []byte {
 	salt := make([]byte, SaltSize)
@@ -109,6 +126,13 @@ func NewSalt() []byte {
 // NewDataKey returns a random data key.
 func NewDataKey() DataKey {
 	var key DataKey
+	rand.Read(key[:])
+	return key
+}
+
+// NewSessionKey returns a random session key.
+func NewSessionKey() SessionKey {
+	var key SessionKey
 	rand.Read(key[:])
 	return key
 }
@@ -145,6 +169,29 @@ func OpenEnvelope(wrap WrapKey, envelope []byte) (DataKey, error) {
 	}
 
 	return DataKey(plain), nil
+}
+
+// SealSession encrypts the data key and the login key with the session key.
+// aad is bound to the result: [OpenSession] needs the same aad. The result
+// is a random nonce followed by the ciphertext.
+func SealSession(session SessionKey, data DataKey, login LoginKey, aad []byte) []byte {
+	plain := append(data[:], login[:]...)
+	return newAEAD(session).Seal(nil, nil, plain, aad)
+}
+
+// OpenSession decrypts the keys sealed by [SealSession]. Returns
+// [ErrCorrupted] if the sealed keys have the wrong size, were modified, were
+// sealed with another session key or with another aad.
+func OpenSession(session SessionKey, sealed, aad []byte) (DataKey, LoginKey, error) {
+	if len(sealed) != sessionSize {
+		return DataKey{}, LoginKey{}, fmt.Errorf("%w: sealed session is %d bytes, want %d", ErrCorrupted, len(sealed), sessionSize)
+	}
+	plain, err := newAEAD(session).Open(nil, nil, sealed, aad)
+	if err != nil {
+		return DataKey{}, LoginKey{}, fmt.Errorf("open session: %w", ErrCorrupted)
+	}
+
+	return DataKey(plain[:KeySize]), LoginKey(plain[KeySize:]), nil
 }
 
 // EncryptRecord encrypts a record with the data key. The record id is bound

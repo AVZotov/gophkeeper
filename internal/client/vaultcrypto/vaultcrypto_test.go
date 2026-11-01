@@ -83,6 +83,13 @@ func TestNewDataKey(t *testing.T) {
 	assert.NotEqual(t, a, b)
 }
 
+func TestNewSessionKey(t *testing.T) {
+	a, b := NewSessionKey(), NewSessionKey()
+
+	assert.NotEqual(t, SessionKey{}, a)
+	assert.NotEqual(t, a, b)
+}
+
 // TestDeriveKeysKnownAnswer pins the Argon2id parameters, the HKDF labels and
 // the derivation scheme. If it fails, existing users can no longer log in.
 func TestDeriveKeysKnownAnswer(t *testing.T) {
@@ -278,6 +285,56 @@ func TestRecordFormat(t *testing.T) {
 	})
 }
 
+func TestSession(t *testing.T) {
+	key := NewSessionKey()
+	data, login := DataKey(seq(0)), LoginKey(seq(32))
+	aad := []byte("expires")
+	sealed := SealSession(key, data, login, aad)
+
+	t.Run("round trip", func(t *testing.T) {
+		gotData, gotLogin, err := OpenSession(key, sealed, aad)
+		require.NoError(t, err)
+		assert.Equal(t, data, gotData)
+		assert.Equal(t, login, gotLogin)
+	})
+
+	t.Run("plain GCM opens SealSession output", func(t *testing.T) {
+		require.Len(t, sealed, 12+2*KeySize+16)
+		got, err := stdGCM(t, key).Open(nil, sealed[:12], sealed[12:], aad)
+		require.NoError(t, err)
+		assert.Equal(t, append(data[:], login[:]...), got)
+	})
+
+	t.Run("fresh nonce on every seal", func(t *testing.T) {
+		assert.NotEqual(t, sealed, SealSession(key, data, login, aad))
+	})
+
+	tests := []struct {
+		name   string
+		key    SessionKey
+		sealed []byte
+		aad    []byte
+	}{
+		{name: "other key", key: NewSessionKey(), sealed: sealed, aad: aad},
+		{name: "other aad", key: key, sealed: sealed, aad: []byte("expirez")},
+		{name: "no aad", key: key, sealed: sealed, aad: nil},
+		{name: "nonce modified", key: key, sealed: flip(sealed, 0), aad: aad},
+		{name: "ciphertext modified", key: key, sealed: flip(sealed, 12), aad: aad},
+		{name: "tag modified", key: key, sealed: flip(sealed, len(sealed)-1), aad: aad},
+		{name: "truncated", key: key, sealed: sealed[:len(sealed)-1], aad: aad},
+		{name: "too long", key: key, sealed: append(bytes.Clone(sealed), 0), aad: aad},
+		{name: "nil", key: key, sealed: nil, aad: aad},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotData, gotLogin, err := OpenSession(tt.key, tt.sealed, tt.aad)
+			assert.ErrorIs(t, err, ErrCorrupted)
+			assert.Equal(t, DataKey{}, gotData)
+			assert.Equal(t, LoginKey{}, gotLogin)
+		})
+	}
+}
+
 func TestKeysAreRedacted(t *testing.T) {
 	raw := seq(0xA0)
 	tests := []struct {
@@ -287,6 +344,7 @@ func TestKeysAreRedacted(t *testing.T) {
 		{name: "data key", key: DataKey(raw)},
 		{name: "wrap key", key: WrapKey(raw)},
 		{name: "login key", key: LoginKey(raw)},
+		{name: "session key", key: SessionKey(raw)},
 	}
 	noTime := func(_ []string, a slog.Attr) slog.Attr {
 		if a.Key == slog.TimeKey {

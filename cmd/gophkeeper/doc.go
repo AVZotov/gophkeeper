@@ -3,6 +3,9 @@
 //
 // Usage:
 //
+//	gophkeeper unlock [--raw]
+//	gophkeeper lock
+//	gophkeeper logout
 //	gophkeeper version
 //
 // The version and build date are set at build time with
