@@ -22,10 +22,11 @@ import (
 // idSize is the size of a record UUID in bytes.
 const idSize = len(uuid.UUID{})
 
-// RecordStore is the record storage the service needs. [storage.Store]
-// implements it.
+// RecordStore is the record storage the service needs.
 type RecordStore interface {
-	PushRecord(ctx context.Context, ownerID int64, id uuid.UUID, baseRevision int64, deleted bool, ciphertext []byte) (int64, error)
+	PushRecord(
+		ctx context.Context, ownerID int64, id uuid.UUID, baseRevision int64, deleted bool, ciphertext []byte,
+	) (int64, error)
 	PullRecords(ctx context.Context, ownerID, since int64, maxRecords, maxBytes int) ([]storage.Record, bool, error)
 }
 
@@ -84,8 +85,10 @@ func (s *Service) Push(ctx context.Context, req *pb.PushRequest) (*pb.PushRespon
 		return nil, err
 	}
 
-	revision, err := s.records.PushRecord(ctx, owner, uuid.UUID(req.GetId()),
-		req.GetBaseRevision(), req.GetDeleted(), req.GetCiphertext())
+	revision, err := s.records.PushRecord(
+		ctx, owner, uuid.UUID(req.GetId()),
+		req.GetBaseRevision(), req.GetDeleted(), req.GetCiphertext(),
+	)
 	if conflict, ok := errors.AsType[*storage.ConflictError](err); ok {
 		return nil, s.conflict(ctx, conflict.Current)
 	}

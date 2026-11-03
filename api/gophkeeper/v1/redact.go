@@ -4,8 +4,7 @@ import "log/slog"
 
 const redacted = "[REDACTED]"
 
-// LogValue hides the login key and the envelope in slog output: with them
-// one can guess the password offline.
+// LogValue hides the login key and the envelope in slog output.
 func (*RegisterRequest) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // LogValue hides the login key in slog output.

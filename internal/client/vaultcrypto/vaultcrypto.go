@@ -31,7 +31,7 @@ const (
 // Argon2id parameters. Changing them locks existing users out.
 const (
 	argon2Time    = 3
-	argon2Memory  = 64 * 1024 // KiB
+	argon2Memory  = 64 * 1024 // KiB, => 64 MiB
 	argon2Threads = 4
 )
 
@@ -88,7 +88,7 @@ type SessionKey [KeySize]byte
 func (DataKey) String() string { return redacted }
 
 // Format hides the key for every fmt verb.
-func (DataKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
+func (DataKey) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redacted) }
 
 // LogValue hides the key in slog output.
 func (DataKey) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -97,7 +97,7 @@ func (DataKey) LogValue() slog.Value { return slog.StringValue(redacted) }
 func (WrapKey) String() string { return redacted }
 
 // Format hides the key for every fmt verb.
-func (WrapKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
+func (WrapKey) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redacted) }
 
 // LogValue hides the key in slog output.
 func (WrapKey) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -106,7 +106,7 @@ func (WrapKey) LogValue() slog.Value { return slog.StringValue(redacted) }
 func (LoginKey) String() string { return redacted }
 
 // Format hides the key for every fmt verb.
-func (LoginKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
+func (LoginKey) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redacted) }
 
 // LogValue hides the key in slog output.
 func (LoginKey) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -115,7 +115,7 @@ func (LoginKey) LogValue() slog.Value { return slog.StringValue(redacted) }
 func (SessionKey) String() string { return redacted }
 
 // Format hides the key for every fmt verb.
-func (SessionKey) Format(f fmt.State, _ rune) { io.WriteString(f, redacted) }
+func (SessionKey) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redacted) }
 
 // LogValue hides the key in slog output.
 func (SessionKey) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -151,7 +151,7 @@ func DeriveKeys(password, salt []byte) (WrapKey, LoginKey, error) {
 	}
 	master := argon2.IDKey(password, salt, argon2Time, argon2Memory, argon2Threads, KeySize)
 
-	return WrapKey(expand(master, wrapKeyInfo)), LoginKey(expand(master, loginKeyInfo)), nil
+	return expand(master, wrapKeyInfo), expand(master, loginKeyInfo), nil
 }
 
 // SealEnvelope encrypts the data key with the wrap key. The result is a
@@ -188,7 +188,9 @@ func SealSession(session SessionKey, data DataKey, login LoginKey, aad []byte) [
 // sealed with another session key or with another aad.
 func OpenSession(session SessionKey, sealed, aad []byte) (DataKey, LoginKey, error) {
 	if len(sealed) != sessionSize {
-		return DataKey{}, LoginKey{}, fmt.Errorf("%w: sealed session is %d bytes, want %d", ErrCorrupted, len(sealed), sessionSize)
+		return DataKey{}, LoginKey{}, fmt.Errorf(
+			"%w: sealed session is %d bytes, want %d", ErrCorrupted, len(sealed), sessionSize,
+		)
 	}
 	plain, err := newAEAD(session).Open(nil, nil, sealed, aad)
 	if err != nil {

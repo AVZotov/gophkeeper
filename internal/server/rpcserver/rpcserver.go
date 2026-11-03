@@ -19,17 +19,19 @@ const maxConcurrentStreams = 16
 
 // maxHeaderListSize bounds the metadata of a call, read before any check:
 // a call needs only a few hundred bytes for the token and the gRPC headers.
-const maxHeaderListSize = 16 << 10
+const maxHeaderListSize = 16 * 1024 // 16 KiB
 
 // New returns a gRPC server that accepts only TLS 1.3 with cert, checks
 // tokens and serves Auth and Vault. Messages may be as large as
 // [pb.MaxMessageSize], so calls without a valid token are rejected before
 // their message is read.
 func New(cert tls.Certificate, authSvc *auth.Service, vaultSvc *vault.Service) *grpc.Server {
-	creds := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
-	})
+	creds := credentials.NewTLS(
+		&tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS13,
+		},
+	)
 	srv := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.InTapHandle(authSvc.TapHandle),

@@ -21,8 +21,7 @@ const (
 )
 
 // limiter allows a burst of attempts per key, then one more every interval.
-// It slows down guessing instead of locking the account: a lock would let
-// anyone lock the owner out. It is safe for concurrent use.
+// It slows down guessing instead of locking the account. It is safe for concurrent use.
 type limiter[K comparable] struct {
 	burst    int
 	interval time.Duration

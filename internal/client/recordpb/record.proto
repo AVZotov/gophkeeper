@@ -8,62 +8,49 @@ package gophkeeper.record.v1;
 
 option go_package = "github.com/AVZotov/gophkeeper/internal/client/recordpb";
 
-// As in proto3, an unset field equals its zero value, so builders take plain
-// values instead of pointers.
+// Builders take plain values instead of pointers.
 option features.field_presence = IMPLICIT;
 
 // Record is the content of one record: common fields and typed data.
 message Record {
-  // Name shown in record lists.
   string name = 1;
   // Free-form text metadata: website, bank, owner, one-time codes and so on.
   string metadata = 2;
 
   // Record data; exactly one type is set.
   oneof data {
-    // Login and password pair.
     Credentials credentials = 3;
-    // Arbitrary text.
     Text text = 4;
-    // Arbitrary binary file.
     File file = 5;
-    // Bank card.
     Card card = 6;
   }
 }
 
 // Credentials is a login and password pair.
 message Credentials {
-  // Login, user name or email.
   string login = 1;
-  // Password.
   string password = 2;
 }
 
 // Text is arbitrary text.
 message Text {
-  // Text content.
   string content = 1;
 }
 
 // File is an arbitrary binary file.
 message File {
-  // Original file name, used when the file is saved back to disk.
   string filename = 1;
-  // File content.
   bytes content = 2;
 }
 
 // Card is bank card data.
 message Card {
-  // Card number as entered, digits only.
+  // Digits only.
   string number = 1;
-  // Cardholder name as printed on the card.
   string holder = 2;
-  // Expiry month, 1-12.
+  // 1-12.
   int32 expiry_month = 3;
-  // Expiry year, four digits.
+  // Four digits, e.g. 2029.
   int32 expiry_year = 4;
-  // Card verification code.
   string cvv = 5;
 }

@@ -244,21 +244,16 @@ func (x *Record) WhichData() case_Record_Data {
 type Record_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Name shown in record lists.
 	Name string
 	// Free-form text metadata: website, bank, owner, one-time codes and so on.
 	Metadata string
 	// Record data; exactly one type is set.
 
 	// Fields of oneof xxx_hidden_Data:
-	// Login and password pair.
 	Credentials *Credentials
-	// Arbitrary text.
-	Text *Text
-	// Arbitrary binary file.
-	File *File
-	// Bank card.
-	Card *Card
+	Text        *Text
+	File        *File
+	Card        *Card
 	// -- end of xxx_hidden_Data
 }
 
@@ -298,22 +293,18 @@ type isRecord_Data interface {
 }
 
 type record_Credentials struct {
-	// Login and password pair.
 	Credentials *Credentials `protobuf:"bytes,3,opt,name=credentials,oneof"`
 }
 
 type record_Text struct {
-	// Arbitrary text.
 	Text *Text `protobuf:"bytes,4,opt,name=text,oneof"`
 }
 
 type record_File struct {
-	// Arbitrary binary file.
 	File *File `protobuf:"bytes,5,opt,name=file,oneof"`
 }
 
 type record_Card struct {
-	// Bank card.
 	Card *Card `protobuf:"bytes,6,opt,name=card,oneof"`
 }
 
@@ -384,9 +375,7 @@ func (x *Credentials) SetPassword(v string) {
 type Credentials_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Login, user name or email.
-	Login string
-	// Password.
+	Login    string
 	Password string
 }
 
@@ -446,7 +435,6 @@ func (x *Text) SetContent(v string) {
 type Text_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Text content.
 	Content string
 }
 
@@ -520,10 +508,8 @@ func (x *File) SetContent(v []byte) {
 type File_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Original file name, used when the file is saved back to disk.
 	Filename string
-	// File content.
-	Content []byte
+	Content  []byte
 }
 
 func (b0 File_builder) Build() *File {
@@ -630,16 +616,14 @@ func (x *Card) SetCvv(v string) {
 type Card_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	// Card number as entered, digits only.
+	// Digits only.
 	Number string
-	// Cardholder name as printed on the card.
 	Holder string
-	// Expiry month, 1-12.
+	// 1-12.
 	ExpiryMonth int32
-	// Expiry year, four digits.
+	// Four digits, e.g. 2029.
 	ExpiryYear int32
-	// Card verification code.
-	Cvv string
+	Cvv        string
 }
 
 func (b0 Card_builder) Build() *Card {

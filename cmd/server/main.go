@@ -22,7 +22,7 @@ import (
 )
 
 // shutdownTimeout bounds the graceful stop. Calls still running after it are
-// cancelled.
+// canceled.
 const shutdownTimeout = 10 * time.Second
 
 func main() {
