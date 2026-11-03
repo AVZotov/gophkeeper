@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/AVZotov/gophkeeper/internal/client/session"
 	"github.com/AVZotov/gophkeeper/internal/client/storage"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
+	"github.com/AVZotov/gophkeeper/internal/client/vaultsync"
 )
 
 // newRegisterCmd returns the register command. It creates a user on the
@@ -48,17 +50,21 @@ func newLoginCmd(a app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login LOGIN",
 		Short: "Log in to the server and unlock the vault",
-		Long: "Login asks for the master password, logs in to the server and starts a session" +
-			" as unlock does. The server address and the CA certificate are saved for the" +
-			" next commands. The local vault belongs to one user: to log in as another one," +
-			" run gophkeeper logout first.",
+		Long: "Login asks for the master password, logs in to the server, starts a session" +
+			" as unlock does and syncs the records. The server address and the CA certificate" +
+			" are saved for the next commands. The local vault belongs to one user: to log in" +
+			" as another one, run gophkeeper logout first.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keys, err := enter(cmd, a, flags, args[0], false)
 			if err != nil {
 				return err
 			}
-			return startSession(cmd, a, keys, raw)
+			if err := startSession(cmd, a, keys, raw); err != nil {
+				return err
+			}
+			syncAfterLogin(cmd, a, keys)
+			return nil
 		},
 	}
 	flags.add(cmd)
@@ -155,4 +161,37 @@ func enter(cmd *cobra.Command, a app, flags serverFlags, login string, register 
 		return session.Keys{}, err
 	}
 	return keys, nil
+}
+
+// syncAfterLogin syncs the records with the keys of the new session and
+// prints the result to stderr, so that --raw still prints only the key. A
+// failed sync does not fail the login: the session is already started.
+func syncAfterLogin(cmd *cobra.Command, a app, keys session.Keys) {
+	w := cmd.ErrOrStderr()
+	res, err := loginSync(cmd.Context(), a, keys)
+	if err != nil {
+		fmt.Fprintf(w, "Logged in, but sync failed: %v\nRun gophkeeper sync to try again.\n", err)
+		return
+	}
+	fmt.Fprintf(w, syncReport, res.Pushed, res.Pulled, res.Conflicts)
+}
+
+// loginSync syncs the records of the saved state with keys. The session key
+// is not in the environment yet, so the vault is opened with keys.
+func loginSync(ctx context.Context, a app, keys session.Keys) (vaultsync.Result, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return vaultsync.Result{}, err
+	}
+	store, err := a.openStore(ctx)
+	if err != nil {
+		return vaultsync.Result{}, err
+	}
+	defer store.Close()
+	st, err := loggedIn(ctx, store)
+	if err != nil {
+		return vaultsync.Result{}, err
+	}
+	v := &vault{app: a, cfg: cfg, store: store, state: st, keys: keys}
+	return v.sync(ctx)
 }

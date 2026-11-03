@@ -35,7 +35,6 @@ func readPassword(cmd *cobra.Command, prompt string) ([]byte, error) {
 	fmt.Fprint(w, prompt)
 	if fd, ok := terminal(cmd); ok {
 		password, err := readTerminal(cmd.Context(), fd, func() ([]byte, error) { return term.ReadPassword(fd) })
-		// The Enter key was not echoed either.
 		fmt.Fprintln(w)
 		if err != nil {
 			return nil, fmt.Errorf("read password: %w", err)

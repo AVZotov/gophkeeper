@@ -10,6 +10,9 @@ import (
 	"github.com/AVZotov/gophkeeper/internal/client/vaultsync"
 )
 
+// syncReport prints the [vaultsync.Result] of a sync.
+const syncReport = "Pushed %d, pulled %d, conflicts %d.\n"
+
 // newSyncCmd returns the sync command.
 func newSyncCmd(a app) *cobra.Command {
 	return &cobra.Command{
@@ -32,7 +35,7 @@ func newSyncCmd(a app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Pushed %d, pulled %d, conflicts %d.\n", res.Pushed, res.Pulled, res.Conflicts)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), syncReport, res.Pushed, res.Pulled, res.Conflicts)
 			return err
 		},
 	}

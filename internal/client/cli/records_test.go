@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,18 @@ const offlineNotice = "Saved locally, will sync later: the server is unavailable
 // cancelAfter is when TestCommandStopsOnCancel cancels the command.
 const cancelAfter = 200 * time.Millisecond
 
-var addedID = regexp.MustCompile(`Added record ([0-9a-f-]{36})\.`)
+var (
+	addedID = regexp.MustCompile(`Added record ([0-9a-f]{` + strconv.Itoa(shortIDSize) + `})\.\n`)
+	shownID = regexp.MustCompile(`(?m)^ID: +([0-9a-f-]{36})$`)
+)
+
+// fullID returns the full ID printed by show.
+func fullID(t *testing.T, show string) string {
+	t.Helper()
+	m := shownID.FindStringSubmatch(show)
+	require.NotNil(t, m, show)
+	return m[1]
+}
 
 // offline is an unlocked vault whose server cannot be reached.
 type offline struct {
@@ -71,7 +83,8 @@ func (o *offline) run(stdin string, args ...string) (string, error) {
 	return stdout, err
 }
 
-// add runs add with args and returns the ID of the new record.
+// add runs add with args and returns the full ID of the new record, found
+// by the short ID that add prints.
 func (o *offline) add(stdin string, args ...string) string {
 	o.t.Helper()
 	stdout, err := o.run(stdin, append([]string{"add"}, args...)...)
@@ -79,7 +92,7 @@ func (o *offline) add(stdin string, args ...string) string {
 	m := addedID.FindStringSubmatch(stdout)
 	require.NotNil(o.t, m, stdout)
 	assert.Contains(o.t, stdout, offlineNotice)
-	return m[1]
+	return fullID(o.t, o.show(m[1]))
 }
 
 func (o *offline) show(id string, args ...string) string {
@@ -314,7 +327,7 @@ func TestEdit(t *testing.T) {
 			stdout, err := o.run(tt.stdin, append([]string{"edit", id[:8]}, tt.edit...)...)
 			require.NoError(t, err)
 
-			assert.Contains(t, stdout, "Updated record "+id+".\n"+offlineNotice)
+			assert.Contains(t, stdout, "Updated record "+id[:shortIDSize]+".\n"+offlineNotice)
 			out := o.show(id)
 			assertLines(t, out, tt.want...)
 			if tt.absent != "" {
@@ -398,7 +411,7 @@ func TestDelete(t *testing.T) {
 	stdout, err := o.run("", "delete", id[:6])
 	require.NoError(t, err)
 
-	assert.Equal(t, "Deleted record "+id+".\n"+offlineNotice, stdout)
+	assert.Equal(t, "Deleted record "+id[:shortIDSize]+".\n"+offlineNotice, stdout)
 	list, err := o.run("", "list")
 	require.NoError(t, err)
 	assert.Equal(t, "ID  TYPE  NAME\n", list)
@@ -417,15 +430,16 @@ func TestList(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, strings.Join([]string{
-		"ID                                    TYPE   NAME",
-		card + "  card   Bank",
-		login + "  login  Mail",
-		note + "  text   Note (conflict)",
+		"ID        TYPE   NAME",
+		card[:shortIDSize] + "  card   Bank",
+		login[:shortIDSize] + "  login  Mail",
+		note[:shortIDSize] + "  text   Note (conflict)",
 		"",
-	}, "\n"), stdout, "sorted by name")
+	}, "\n"), stdout, "sorted by name, short IDs")
 	for _, secret := range []string{"secret", "987", "4111", "alice", "body"} {
 		assert.NotContains(t, stdout, secret)
 	}
+	assertLines(t, o.show(card[:shortIDSize]), "ID: "+card)
 }
 
 // TestListShowOffline checks that only the commands that change records
@@ -507,7 +521,7 @@ func TestUndecryptableRecord(t *testing.T) {
 
 	list, err := o.run("", "list")
 	require.NoError(t, err, "one damaged record does not hide the others")
-	assertLines(t, list, damaged.String()+" ? (cannot decrypt)", good+" text Note")
+	assertLines(t, list, damaged.String()[:shortIDSize]+" ? (cannot decrypt)", good[:shortIDSize]+" text Note")
 
 	_, err = o.run("", "show", damaged.String())
 	assert.ErrorIs(t, err, vaultcrypto.ErrCorrupted)
@@ -518,7 +532,7 @@ func TestUndecryptableRecord(t *testing.T) {
 	require.NoError(t, err)
 	list, err = o.run("", "list")
 	require.NoError(t, err)
-	assert.NotContains(t, list, damaged.String())
+	assert.NotContains(t, list, undecryptableName)
 }
 
 func TestListSortsIgnoringCase(t *testing.T) {

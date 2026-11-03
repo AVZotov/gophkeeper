@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"uuid"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +25,11 @@ const fileMode = 0o600
 // columnPadding separates the columns printed by list and show.
 const columnPadding = 2
 
+// shortIDSize is the number of the first characters of a record ID shown
+// by list and the commands that change records. Commands take an ID or its
+// beginning, so the short one is enough to address a record.
+const shortIDSize = 8
+
 // expiryYears turns the full year of a card expiry into two digits.
 const expiryYears = 100
 
@@ -33,9 +40,10 @@ func newListCmd(a app) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the records: ID, type and name",
-		Long: "List shows the local records, without secrets, by name. It works offline: run gophkeeper sync" +
-			" to get the changes from other devices. A copy made by a sync conflict has \"" +
-			vaultsync.ConflictSuffix + "\" in its name.",
+		Long: "List shows the local records, without secrets, by name. The ID column has the first " +
+			strconv.Itoa(shortIDSize) + " characters of the ID: show, edit and delete take them, and show" +
+			" prints the full ID. List works offline: run gophkeeper sync to get the changes from" +
+			" other devices. A copy made by a sync conflict has \"" + vaultsync.ConflictSuffix + "\" in its name.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			v, err := a.openVault(cmd.Context())
@@ -52,7 +60,7 @@ func newListCmd(a app) *cobra.Command {
 			rows := make([]row, 0, len(stored))
 			for _, r := range stored {
 				recordType, name := v.describe(r)
-				rows = append(rows, row{r.ID.String(), recordType, name})
+				rows = append(rows, row{shortID(r.ID), recordType, name})
 			}
 			slices.SortFunc(rows, func(a, b row) int {
 				return cmp.Or(
@@ -78,8 +86,8 @@ func newShowCmd(a app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show ID",
 		Short: "Show a record with its secrets",
-		Long: "Show prints the record, its password and CVV included. ID is the record ID or its" +
-			" unique prefix. The content of a file is saved with --out. Show works offline.",
+		Long: "Show prints the record, its full ID, password and CVV included. " + idHelp +
+			" The content of a file is saved with --out. Show works offline.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := a.openVault(cmd.Context())
@@ -166,6 +174,11 @@ func showContent(cmd *cobra.Command, rec *recordpb.Record, out string) error {
 		return err
 	}
 	return nil
+}
+
+// shortID returns the first [shortIDSize] characters of id.
+func shortID(id uuid.UUID) string {
+	return id.String()[:shortIDSize]
 }
 
 // newTable returns a writer that aligns tab-separated columns.

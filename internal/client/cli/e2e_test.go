@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
 
@@ -574,6 +576,51 @@ func TestUnlockWrongPasswordOnline(t *testing.T) {
 	assert.NotContains(t, err.Error(), "cannot ask the server", "the server was asked")
 }
 
+func TestLoginSyncs(t *testing.T) {
+	s := startServer(t)
+	a := s.newClient(t)
+	login := newLogin()
+	a.register(s, login, firstPassword)
+	a.add("mail")
+	a.sync()
+	b := s.newClient(t)
+
+	stdout, stderr, err := run(t, b.app, firstPassword+"\n", "login", login, "--ca", s.ca, "--raw")
+
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(stderr, "Pushed 0, pulled 1, conflicts 0.\n"), stderr)
+	b.key = strings.TrimSpace(stdout)
+	assert.NotContains(t, b.key, "\n", "--raw prints only the key")
+	assert.Equal(t, []string{"mail"}, b.names())
+	assert.Equal(t, a.state().LastRevision, b.state().LastRevision)
+}
+
+// TestLoginSyncFails fails the sync after a successful login: the login
+// still succeeds, and the session works.
+func TestLoginSyncFails(t *testing.T) {
+	s := startServer(t)
+	a := s.newClient(t)
+	login := newLogin()
+	a.register(s, login, firstPassword)
+	b := s.newClient(t)
+	failPull := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if method == pb.Vault_Pull_FullMethodName {
+			return status.Error(codes.Internal, "pull failed")
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+	b.app.dialOptions = append(b.app.dialOptions, grpc.WithUnaryInterceptor(failPull))
+
+	stdout, stderr, err := run(t, b.app, firstPassword+"\n", "login", login, "--ca", s.ca, "--raw")
+
+	require.NoError(t, err, "the session is started")
+	assert.Contains(t, stderr, "Logged in, but sync failed")
+	assert.Contains(t, stderr, "pull failed")
+	b.key = strings.TrimSpace(stdout)
+	_, err = b.run("", "list")
+	assert.NoError(t, err)
+}
+
 func TestLoginServerUnavailable(t *testing.T) {
 	s := startServer(t)
 	s.srv.Stop()
@@ -583,7 +630,8 @@ func TestLoginServerUnavailable(t *testing.T) {
 	assert.ErrorIs(t, err, remote.ErrUnavailable)
 }
 
-// addRecord runs add on c and returns the ID of the new record.
+// addRecord runs add on c and returns the full ID of the new record, found
+// by the short ID that add prints.
 func (c *testClient) addRecord(stdin string, args ...string) string {
 	c.t.Helper()
 	stdout, err := c.run(stdin, append([]string{"add"}, args...)...)
@@ -591,7 +639,7 @@ func (c *testClient) addRecord(stdin string, args ...string) string {
 	m := addedID.FindStringSubmatch(stdout)
 	require.NotNil(c.t, m, stdout)
 	assert.NotContains(c.t, stdout, offlineNotice, "add syncs at once")
-	return m[1]
+	return fullID(c.t, c.show(m[1]))
 }
 
 func (c *testClient) show(id string, args ...string) string {
@@ -627,8 +675,8 @@ func TestRecordsAcrossDevices(t *testing.T) {
 	b.sync()
 	list, err := b.run("", "list")
 	require.NoError(t, err)
-	assert.Contains(t, list, login)
-	assert.NotContains(t, list, file)
+	assert.Contains(t, list, login[:shortIDSize])
+	assert.NotContains(t, list, file[:shortIDSize])
 }
 
 func TestRecordsOffline(t *testing.T) {

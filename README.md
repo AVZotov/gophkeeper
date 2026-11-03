@@ -10,7 +10,7 @@
 
 ### Контракт
 
-Клиент и сервер общаются по gRPC поверх TLS. Контракт — [api/gophkeeper/v1/gophkeeper.proto](api/gophkeeper/v1/gophkeeper.proto):сервис `Auth` (соль, регистрация, вход, смена пароля) и сервис `Vault`(отправка и получение записей).Содержимое записи описано отдельно, в [internal/client/recordpb/record.proto](internal/client/recordpb/record.proto).Этот формат знает только клиент: запись сериализуется, шифруется, исервер получает лишь шифротекст.
+Клиент и сервер общаются по gRPC поверх TLS. Контракт — [api/gophkeeper/v1/gophkeeper.proto](api/gophkeeper/v1/gophkeeper.proto): сервис `Auth` (соль, регистрация, вход, смена пароля) и сервис `Vault` (отправка и получение записей). Содержимое записи описано отдельно, в [internal/client/recordpb/record.proto](internal/client/recordpb/record.proto). Этот формат знает только клиент: запись сериализуется, шифруется, и сервер получает лишь шифротекст.
 
 ### Криптография клиента
 
@@ -27,7 +27,7 @@
 - **ключ для входа** — подтверждает серверу знание пароля; сервер хранит
   только его хеш.
 
-**Argon2id** — функция вывода ключа из пароля, намеренно дорогая повремени и памяти: каждая попытка подобрать пароль стоит атакующему столько же, сколько и один вход Пользователю. Параметры взяты как есть из стандарта Argon2, RFC 9106 (второй рекомендованный набор — для систем, где 2 ГиБ памяти на вход недоступны)
+**Argon2id** — функция вывода ключа из пароля, намеренно дорогая по времени и памяти: каждая попытка подобрать пароль стоит атакующему столько же, сколько и один вход Пользователю. Параметры взяты как есть из стандарта Argon2, RFC 9106 (второй рекомендованный набор — для систем, где 2 ГиБ памяти на вход недоступны)
 
 Соль генерирует клиент при регистрации и при смене пароля. Она не секретна, но изолирует пользователей: при утечке базы пароль придётся подбирать для каждой учётной записи отдельно.
 
@@ -41,7 +41,7 @@ gRPC-сервер собирается в [internal/server/rpcserver](internal/s
 Сервис аутентификации — [internal/server/auth](internal/server/auth).
 Сервер хранит не ключ для входа, а его SHA-256 и сравнивает за постоянное время. На неверный логин и неверный ключ он отвечает одинаково, а для неизвестного логина отдаёт фальшивую, но постоянную соль — так нельзя узнать, есть ли пользователь.
 
-После входа сервер выдаёт JWT (HS256) сроком на 15 минут. В токене толькоID пользователя и время выдачи; принимается только HS256, токен без срока действия отклоняется.
+После входа сервер выдаёт JWT (HS256) сроком на 15 минут. В токене только ID пользователя и время выдачи; принимается только HS256, токен без срока действия отклоняется.
 
 Попытки ограничены (`golang.org/x/time/rate`): 30 вызовов публичных методов в минуту на IP и 5 попыток входа в минуту на пару логин + IP. Лимит замедляет перебор, а не блокирует аккаунт —
 иначе любой, кто знает логин, мог бы заблокировать владельца.
@@ -53,19 +53,19 @@ PostgreSQL через pgx — [internal/server/storage](internal/server/storage)
 
 ### Синхронизация
 
-У пользователя на сервере сквозной счётчик ревизий. `Push` берёт следующий номер через `UPDATE users` — это блокирует строкупользователя до коммита, поэтому изменения коммитятся строго по порядку
+У пользователя на сервере сквозной счётчик ревизий. `Push` берёт следующий номер через `UPDATE users` — это блокирует строку пользователя до коммита, поэтому изменения коммитятся строго по порядку
 ревизий и `Pull` ничего не пропускает. `Pull` отдаёт записи страницами, ограниченными по числу
 и по суммарному размеру.
 
 ### Клиент
 
-CLI на Cobra — [internal/client/cli](internal/client/cli). Записи хранятся локально в SQLite на чистом Go ([internal/client/storage](internal/client/storage)),поэтому клиент работает без сети, а правки помечаются как неотправленные.
+CLI на Cobra — [internal/client/cli](internal/client/cli). Записи хранятся локально в SQLite на чистом Go ([internal/client/storage](internal/client/storage)), поэтому клиент работает без сети, а правки помечаются как неотправленные.
 
-Сессия ([internal/client/session](internal/client/session)) устроена пообразцу Bitwarden CLI: `unlock` шифрует ключи случайным ключом сессии,который живёт только в переменной окружения терминала.
+Сессия ([internal/client/session](internal/client/session)) устроена по образцу Bitwarden CLI: `unlock` шифрует ключи случайным ключом сессии, который живёт только в переменной окружения терминала.
 
-Связь с сервером — [internal/client/remote](internal/client/remote): TLS,повторы при сбоях сети и тихий повторный вход по истёкшему токену.
+Связь с сервером — [internal/client/remote](internal/client/remote): TLS, повторы при сбоях сети и тихий повторный вход по истёкшему токену.
 
-Синхронизация — [internal/client/vaultsync](internal/client/vaultsync):сначала отправка, потом получение; при конфликте сохраняется версия сервера, а своя правка — копией с пометкой «(conflict)».
+Синхронизация — [internal/client/vaultsync](internal/client/vaultsync): сначала отправка, потом получение; при конфликте сохраняется версия сервера, а своя правка — копией с пометкой «(conflict)».
 
 ## Ограничения
 
@@ -91,64 +91,59 @@ CLI на Cobra — [internal/client/cli](internal/client/cli). Записи хр
 
 ## Сборка и запуск
 
-Нужны: Go (версия из [go.mod](go.mod)), [Task](https://taskfile.dev),Docker и OpenSSL. `protoc` нужен только для перегенерации кода из `.proto`.
+Нужны: Go (версия из [go.mod](go.mod)), [Task](https://taskfile.dev), Docker и OpenSSL. `protoc` нужен только для перегенерации кода из `.proto`.
 
-```task build        # bin/gophkeeper (клиент) и bin/server```
-
-```task build:all    # клиент под Windows, Linux и macOS в bin/<os>-<arch>/```
-
-```task check        # сборка, vet, gofmt и тесты (нужен запущенный Docker)```
-
-```task cover        # покрытие```
+```bash
+task build        # bin/gophkeeper (клиент) и bin/server
+task build:all    # клиент под Windows, Linux и macOS в bin/<os>-<arch>/
+task check        # сборка, vet, gofmt и тесты (нужен запущенный Docker)
+task cover        # покрытие
+```
 
 ### Сервер
 
-```task db:up        # PostgreSQL в Docker```
+```bash
+task db:up        # PostgreSQL в Docker
+task certs        # dev CA и сертификат сервера в certs/
+export DATABASE_DSN='postgres://gophkeeper:gophkeeper@localhost:5432/gophkeeper?sslmode=disable'
+export SERVER_SECRET=$(openssl rand -hex 32)   # сохранить: секрет должен быть постоянным
+./bin/server      # слушает localhost:8443
+```
 
-```task certs        # dev CA и сертификат сервера в certs/```
-
-```export DATABASE_DSN='<DSN из compose.yaml>'```
-
-```export SERVER_SECRET=$(openssl rand -hex 32)   # сохраните: секрет должен быть постоянным./bin/server      # слушает localhost:8443```
-
-Флаги и переменные окружения — `./bin/server -h`. Миграции применяютсяпри старте.
+Флаги и переменные окружения — `./bin/server -h`. Миграции применяются при старте.
 
 ## Использование
 
-Вход и регистрация сразу открывают сессию и печатают команду, которую нужно выполнить в терминале, чтобы задать `GOPHKEEPER_SESSION`:
+Логин передаётся аргументом. `--server` по умолчанию — `localhost:8443`, `--ca` — сертификат CA, которым подписан сертификат сервера (для dev-сервера — `certs/ca.crt`). Адрес и CA сохраняются, повторно их указывать не нужно.
 
-```gophkeeper register --server localhost:8443 --ca certs/<ca.crt>```
+Вход и регистрация сразу открывают сессию и печатают команду, которую нужно выполнить в терминале, чтобы задать `GOPHKEEPER_SESSION`. После `login` записи сразу синхронизируются с сервером.
 
-```gophkeeper login    --server localhost:8443 --ca certs/<ca.crt>   # на другом устройстве```
+```bash
+gophkeeper register alexey --ca certs/ca.crt
+gophkeeper login alexey --ca certs/ca.crt   # на другом устройстве
+gophkeeper unlock   # открыть сессию заново (живёт час)
+gophkeeper lock     # закрыть сессию
+gophkeeper logout   # удалить локальные данные
+```
 
-```gophkeeper unlock   # открыть сессию заново (живёт час)```
+Записи (после изменения клиент сразу синхронизируется; без сети правка сохраняется локально):
 
-```gophkeeper lock     # закрыть сессию```
+```bash
+gophkeeper add login --name "Почта" --login alexey_zotov@yandex.ru   # пароль спросит
+gophkeeper add text  --name "Коды" --text "123 456 789"
+gophkeeper add file  --name "Паспорт" --file ./passport.pdf
+gophkeeper add card  --name "Карта" --number 4111111111111111 --holder "Alex Zotov" --expiry 04/29   # CVV спросит
+gophkeeper list
+```
 
-```gophkeeper logout   # удалить локальные данные```
+`list` показывает первые 8 символов ID. Команды `show`, `edit` и `delete` принимают ID или его начало — например, как в `list`; полный ID печатает `show`:
 
-Записи (после изменения клиент сразу синхронизируется; без сети правкасохраняется локально):
-
-```gophkeeper add login --name "Почта" --login alexey_zotov@yandex.ru   # пароль спросит```
-
-```gophkeeper add text  --name "Коды" --text "123 456 789"```
-
-```gophkeeper add file  --name "Паспорт" --file ./passport.pdf```
-
-```gophkeeper add card  --name "Карта" --number 4111111111111111 --holder "Alex Zotov" --expiry 04/29 # CVV спросит```
-
-```gophkeeper list```
-
-```gophkeeper show <id>                  # id или его начало```
-
-```gophkeeper show <id> --out ./copy.pdf # сохранить файл```
-
-```gophkeeper edit <id> --password -     # «-» — спросить новое значение```
-
-```gophkeeper delete <id>```
-
-```gophkeeper sync```
-
-```gophkeeper change-password```
-
-```gophkeeper version```
+```bash
+gophkeeper show 3f2a9c1e                    # запись с секретами
+gophkeeper show 7b04d2aa --out ./copy.pdf   # сохранить файл
+gophkeeper edit 3f2a9c1e --password -       # «-» — спросить новое значение
+gophkeeper delete 7b04d2aa
+gophkeeper sync
+gophkeeper change-password
+gophkeeper version
+```

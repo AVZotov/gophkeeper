@@ -52,6 +52,9 @@ const expiryPartSize = 2
 // mebibyte is the unit of the file size limit in the help.
 const mebibyte = 1 << 20
 
+// idHelp tells which ID the commands that take a record ID accept.
+const idHelp = "ID is the record ID or its beginning, as shown by list."
+
 // historyWarning ends the help of the flags with secrets.
 const historyWarning = "; a value given here stays in the shell history"
 
@@ -171,9 +174,8 @@ func newEditCmd(a app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "edit ID",
 		Short: "Change the fields of a record given as flags",
-		Long: "Edit changes only the fields given as flags. ID is the record ID or its unique" +
-			" prefix. --password - and --cvv - ask for the new value without echo, --text - reads" +
-			" the text from the input.",
+		Long: "Edit changes only the fields given as flags. " + idHelp + " --password - and" +
+			" --cvv - ask for the new value without echo, --text - reads the text from the input.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := a.openVault(cmd.Context())
@@ -207,7 +209,7 @@ func newDeleteCmd(a app) *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete ID",
 		Short: "Delete a record",
-		Long:  "Delete deletes the record on all devices after sync. ID is the record ID or its unique prefix.",
+		Long:  "Delete deletes the record on all devices after sync. " + idHelp,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := a.openVault(cmd.Context())
@@ -244,7 +246,7 @@ func (v *vault) save(cmd *cobra.Command, id uuid.UUID, rec *recordpb.Record) err
 // saved tells the user that the record was changed, as verb says, and
 // syncs the change.
 func (v *vault) saved(cmd *cobra.Command, verb string, id uuid.UUID) error {
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s record %s.\n", verb, id); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s record %s.\n", verb, shortID(id)); err != nil {
 		return err
 	}
 	return v.syncChange(cmd)
