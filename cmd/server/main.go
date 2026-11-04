@@ -58,7 +58,7 @@ func run(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	defer store.Close()
 
-	authSvc, err := auth.NewService(store, cfg.Secret, log)
+	authSvc, err := auth.NewService(store, cfg.Secret, log, time.Now)
 	if err != nil {
 		return fmt.Errorf("create auth service: %w", err)
 	}

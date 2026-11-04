@@ -228,3 +228,77 @@ func TestInterceptorStoreError(t *testing.T) {
 	assert.Equal(t, codes.Internal, status.Code(err))
 	assert.False(t, called)
 }
+
+// TestTokenRevocationWindow goes through a password change with the service
+// clock: a token issued in the second of the change is valid, before or after
+// the change itself, and a token issued a second earlier is revoked.
+func TestTokenRevocationWindow(t *testing.T) {
+	const changeAfter = 500 * time.Millisecond
+	s, clock := newClockedService(t, newFakeStore())
+	ctx := t.Context()
+	_, err := s.Register(ctx, registerRequest("alice", 1))
+	require.NoError(t, err)
+	login := func(key byte) string {
+		t.Helper()
+		resp, err := s.Login(ctx, pb.LoginRequest_builder{Login: "alice", LoginKey: filled(key, loginKeySize)}.Build())
+		require.NoError(t, err)
+		return resp.GetToken()
+	}
+
+	secondEarlier := login(1)
+	clock.Advance(time.Second)
+	sameSecondBefore := login(1)
+	clock.Advance(changeAfter)
+	_, err = s.ChangePassword(WithUserID(ctx, 1), pb.ChangePasswordRequest_builder{
+		OldLoginKey: filled(1, loginKeySize),
+		NewSalt:     filled(2, saltSize),
+		NewLoginKey: filled(2, loginKeySize),
+		NewEnvelope: filled(2, envelopeSize),
+	}.Build())
+	require.NoError(t, err)
+	sameSecondAfter := login(2)
+
+	tests := []struct {
+		name      string
+		token     string
+		wantValid bool
+	}{
+		{"issued a second earlier", secondEarlier, false},
+		{"same second, before the change", sameSecondBefore, true},
+		{"same second, after the change", sameSecondAfter, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, called, err := intercept(withAuthorization(ctx, bearerPrefix+tt.token), s, protectedMethod)
+			assert.Equal(t, tt.wantValid, called)
+			if tt.wantValid {
+				assert.NoError(t, err)
+			} else {
+				assert.Equal(t, codes.Unauthenticated, status.Code(err))
+			}
+		})
+	}
+}
+
+// TestTokenUsesServiceClock checks a token against the clock of the service:
+// to the real clock this one is issued in the future. It expires by the same
+// clock.
+func TestTokenUsesServiceClock(t *testing.T) {
+	store := newFakeStore()
+	store.users = []storage.User{{ID: 1, Login: "alice"}}
+	s, clock := newClockedService(t, store)
+	store.changedAt[1] = clock.Now()
+	token, err := issueToken(s.tokenKey, 1, clock.Now())
+	require.NoError(t, err)
+	ctx := withAuthorization(t.Context(), bearerPrefix+token)
+
+	_, called, err := intercept(ctx, s, protectedMethod)
+	require.NoError(t, err)
+	assert.True(t, called)
+
+	clock.Advance(tokenTTL)
+
+	_, called, err = intercept(ctx, s, protectedMethod)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+	assert.False(t, called)
+}

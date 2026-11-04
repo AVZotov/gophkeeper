@@ -57,6 +57,7 @@ type Service struct {
 
 	users        UserStore
 	log          *slog.Logger
+	now          func() time.Time
 	tokenKey     []byte
 	fakeSaltKey  []byte
 	ipLimiter    *limiter[string]
@@ -70,15 +71,17 @@ type loginAttempt struct {
 }
 
 // NewService returns the service. The token key and the fake salt key are
-// derived from secret. Returns [ErrSecretSize] if secret is not [SecretSize]
+// derived from secret. now is the clock of the tokens, the password change
+// times and the limits. Returns [ErrSecretSize] if secret is not [SecretSize]
 // bytes.
-func NewService(users UserStore, secret []byte, log *slog.Logger) (*Service, error) {
+func NewService(users UserStore, secret []byte, log *slog.Logger, now func() time.Time) (*Service, error) {
 	if len(secret) != SecretSize {
 		return nil, ErrSecretSize
 	}
 	return &Service{
 		users:        users,
 		log:          log,
+		now:          now,
 		tokenKey:     deriveKey(secret, tokenKeyInfo),
 		fakeSaltKey:  deriveKey(secret, fakeSaltKeyInfo),
 		ipLimiter:    newLimiter[string](ipBurst, ipInterval),
@@ -120,7 +123,7 @@ func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 		Salt:         req.GetSalt(),
 		LoginKeyHash: hashLoginKey(req.GetLoginKey()),
 		Envelope:     req.GetEnvelope(),
-	}, time.Now())
+	}, s.now())
 	if errors.Is(err, storage.ErrUserExists) {
 		return nil, status.Error(codes.AlreadyExists, "login is taken")
 	}
@@ -145,7 +148,7 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 		return nil, err
 	}
 
-	now := time.Now()
+	now := s.now()
 	if !s.loginLimiter.allow(loginAttempt{login: req.GetLogin(), ip: clientIP(ctx)}, now) {
 		return nil, status.Error(codes.ResourceExhausted, "too many login attempts, try again later")
 	}
@@ -199,7 +202,7 @@ func (s *Service) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequ
 		Salt:         req.GetNewSalt(),
 		LoginKeyHash: hashLoginKey(req.GetNewLoginKey()),
 		Envelope:     req.GetNewEnvelope(),
-	}, time.Now())
+	}, s.now())
 	if err != nil {
 		return nil, rpcerr.Internal(ctx, s.log, "change password", err)
 	}

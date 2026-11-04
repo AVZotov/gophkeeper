@@ -33,6 +33,7 @@ import (
 	"github.com/AVZotov/gophkeeper/internal/client/storage"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultsync"
+	"github.com/AVZotov/gophkeeper/internal/clocktest"
 	"github.com/AVZotov/gophkeeper/internal/pgtest"
 	"github.com/AVZotov/gophkeeper/internal/server/auth"
 	"github.com/AVZotov/gophkeeper/internal/server/rpcserver"
@@ -72,6 +73,7 @@ type testServer struct {
 	lis    *bufconn.Listener
 	ca     string
 	secret []byte
+	clock  *clocktest.Clock
 }
 
 func startServer(t *testing.T) *testServer {
@@ -83,7 +85,8 @@ func startServer(t *testing.T) *testServer {
 	log := slog.New(slog.DiscardHandler)
 	secret := make([]byte, auth.SecretSize)
 	rand.Read(secret)
-	authSvc, err := auth.NewService(store, secret, log)
+	clock := clocktest.New(time.Now())
+	authSvc, err := auth.NewService(store, secret, log, clock.Now)
 	require.NoError(t, err)
 
 	s := &testServer{
@@ -91,6 +94,7 @@ func startServer(t *testing.T) *testServer {
 		lis:    bufconn.Listen(bufSize),
 		ca:     cert.CertFile,
 		secret: secret,
+		clock:  clock,
 	}
 	go s.srv.Serve(s.lis)
 	t.Cleanup(s.srv.Stop)
@@ -369,7 +373,7 @@ func TestSyncLostPushResponse(t *testing.T) {
 }
 
 func TestChangePassword(t *testing.T) {
-	_, a, b := twoDevices(t)
+	s, a, b := twoDevices(t)
 	a.add("note")
 	a.sync()
 	oldSalt := a.state().Salt
@@ -379,7 +383,7 @@ func TestChangePassword(t *testing.T) {
 
 	// A token issued in the second of the change still works, so the token
 	// of b has to be older.
-	waitNextSecond()
+	s.clock.Advance(time.Second)
 	stdout, err := a.run(firstPassword+"\n"+secondPassword+"\n"+secondPassword+"\n", "change-password")
 	require.NoError(t, err)
 	assert.Equal(t, "Your master password is changed.\n", stdout)
@@ -396,14 +400,6 @@ func TestChangePassword(t *testing.T) {
 	assert.Equal(t, a.state().Envelope, b.state().Envelope)
 	b.sync()
 	assert.Equal(t, []string{"after change", "note"}, b.names())
-}
-
-// waitNextSecond sleeps past the next whole second. Token issue times have
-// whole seconds, so a token issued before the wait is older than a password
-// change after it.
-func waitNextSecond() {
-	const margin = 100 * time.Millisecond
-	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + margin)))
 }
 
 func TestChangePasswordMismatch(t *testing.T) {
@@ -447,7 +443,7 @@ func expiredToken(t *testing.T, s *testServer, token string) string {
 	key, err := hkdf.Expand(sha256.New, s.secret, "gophkeeper/v1/server/token-key", sha256.Size)
 	require.NoError(t, err)
 
-	now := time.Now()
+	now := s.clock.Now()
 	claims.IssuedAt = jwt.NewNumericDate(now.Add(-time.Hour))
 	claims.ExpiresAt = jwt.NewNumericDate(now.Add(-time.Minute))
 	expired, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(key)

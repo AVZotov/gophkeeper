@@ -16,9 +16,19 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/tap"
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
+	"github.com/AVZotov/gophkeeper/internal/clocktest"
 	"github.com/AVZotov/gophkeeper/internal/server/storage"
+)
+
+// The clock of a test service is ahead of the real one, so a call that reads
+// the real clock instead shows, and inside a second, so cutting a time to
+// seconds changes it.
+const (
+	clockAhead    = time.Hour
+	clockFraction = 100 * time.Millisecond
 )
 
 var (
@@ -101,9 +111,18 @@ func (f *fakeStore) PasswordChangedAt(_ context.Context, id int64) (time.Time, e
 
 func newTestService(t *testing.T, users UserStore) *Service {
 	t.Helper()
-	s, err := NewService(users, testSecret, slog.New(slog.DiscardHandler))
+	s, err := NewService(users, testSecret, slog.New(slog.DiscardHandler), time.Now)
 	require.NoError(t, err)
 	return s
+}
+
+// newClockedService returns a service with a clock that the test moves.
+func newClockedService(t *testing.T, users UserStore) (*Service, *clocktest.Clock) {
+	t.Helper()
+	clock := clocktest.New(time.Now().Add(clockAhead).Truncate(time.Second).Add(clockFraction))
+	s, err := NewService(users, testSecret, slog.New(slog.DiscardHandler), clock.Now)
+	require.NoError(t, err)
+	return s, clock
 }
 
 // filled returns a slice of n bytes equal to b.
@@ -125,14 +144,14 @@ func withPeer(ctx context.Context, ip string) context.Context {
 
 func TestNewServiceSecretSize(t *testing.T) {
 	for _, n := range []int{0, SecretSize - 1, SecretSize + 1} {
-		_, err := NewService(newFakeStore(), filled(1, n), slog.New(slog.DiscardHandler))
+		_, err := NewService(newFakeStore(), filled(1, n), slog.New(slog.DiscardHandler), time.Now)
 		assert.ErrorIs(t, err, ErrSecretSize, "secret of %d bytes", n)
 	}
 }
 
 func TestRegister(t *testing.T) {
 	store := newFakeStore()
-	s := newTestService(t, store)
+	s, clock := newClockedService(t, store)
 	ctx := t.Context()
 
 	_, err := s.Register(ctx, registerRequest("alice", 1))
@@ -148,7 +167,7 @@ func TestRegister(t *testing.T) {
 	}, u.Credentials, "the login key itself must not be stored")
 	changed, err := store.PasswordChangedAt(ctx, u.ID)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now(), changed, time.Minute, "the change time comes from the server clock")
+	assert.Equal(t, clock.Now(), changed, "the change time comes from the server clock")
 
 	_, err = s.Register(ctx, registerRequest("alice", 2))
 	assert.Equal(t, codes.AlreadyExists, status.Code(err))
@@ -220,14 +239,14 @@ func TestGetSalt(t *testing.T) {
 	assert.Equal(t, fake, getSalt(s, "bob"), "a fake salt must not change")
 	assert.NotEqual(t, fake, getSalt(s, "carol"), "logins must get different fake salts")
 
-	other, err := NewService(store, filled(8, SecretSize), slog.New(slog.DiscardHandler))
+	other, err := NewService(store, filled(8, SecretSize), slog.New(slog.DiscardHandler), time.Now)
 	require.NoError(t, err)
 	assert.NotEqual(t, fake, getSalt(other, "bob"), "a fake salt must depend on the secret")
 }
 
 func TestLogin(t *testing.T) {
 	store := newFakeStore()
-	s := newTestService(t, store)
+	s, clock := newClockedService(t, store)
 	ctx := t.Context()
 	_, err := s.Register(ctx, registerRequest("alice", 1))
 	require.NoError(t, err)
@@ -236,10 +255,10 @@ func TestLogin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filled(1, envelopeSize), resp.GetEnvelope())
 
-	id, issuedAt, err := parseToken(s.tokenKey, resp.GetToken())
+	id, issuedAt, err := parseToken(s.tokenKey, resp.GetToken(), s.now)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), id)
-	assert.WithinDuration(t, time.Now(), issuedAt, time.Minute)
+	assert.True(t, clock.Now().Truncate(time.Second).Equal(issuedAt), "issued at %v", issuedAt)
 }
 
 func TestLoginWrong(t *testing.T) {
@@ -291,7 +310,7 @@ func TestLoginRateLimit(t *testing.T) {
 
 func TestChangePassword(t *testing.T) {
 	store := newFakeStore()
-	s := newTestService(t, store)
+	s, clock := newClockedService(t, store)
 	_, err := s.Register(t.Context(), registerRequest("alice", 1))
 	require.NoError(t, err)
 	ctx := WithUserID(t.Context(), 1)
@@ -314,7 +333,7 @@ func TestChangePassword(t *testing.T) {
 	_, err = s.ChangePassword(t.Context(), req(1))
 	assert.Equal(t, codes.Unauthenticated, status.Code(err), "no user ID in the context")
 
-	store.changedAt[1] = time.Now().Add(-time.Hour)
+	clock.Advance(time.Hour)
 	_, err = s.ChangePassword(ctx, req(1))
 	require.NoError(t, err)
 	u, err = store.UserByID(ctx, 1)
@@ -327,7 +346,7 @@ func TestChangePassword(t *testing.T) {
 	}, u.Credentials)
 	changed, err := store.PasswordChangedAt(ctx, 1)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now(), changed, time.Minute, "the change time comes from the server clock")
+	assert.Equal(t, clock.Now(), changed, "the change time comes from the server clock")
 }
 
 func TestChangePasswordInvalidArgument(t *testing.T) {
@@ -411,7 +430,7 @@ func TestStoreError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			s, err := NewService(&fakeStore{err: errStoreDown}, testSecret, slog.New(slog.NewTextHandler(&logs, nil)))
+			s, err := NewService(&fakeStore{err: errStoreDown}, testSecret, slog.New(slog.NewTextHandler(&logs, nil)), time.Now)
 			require.NoError(t, err)
 
 			err = tt.call(s)
@@ -447,3 +466,47 @@ type fakeAddr string
 
 func (a fakeAddr) Network() string { return string(a) }
 func (a fakeAddr) String() string  { return string(a) }
+
+// TestLimitersUseServiceClock checks that attempts come back when the clock
+// of the service moves, not the real one.
+func TestLimitersUseServiceClock(t *testing.T) {
+	tests := []struct {
+		name     string
+		burst    int
+		interval time.Duration
+		call     func(s *Service, ctx context.Context) error
+	}{
+		{
+			name:     "login attempts",
+			burst:    loginBurst,
+			interval: loginInterval,
+			call: func(s *Service, ctx context.Context) error {
+				_, err := s.Login(ctx, pb.LoginRequest_builder{Login: "alice", LoginKey: filled(1, loginKeySize)}.Build())
+				return err
+			},
+		},
+		{
+			name:     "public methods per IP",
+			burst:    ipBurst,
+			interval: ipInterval,
+			call: func(s *Service, ctx context.Context) error {
+				_, err := s.TapHandle(ctx, &tap.Info{FullMethodName: pb.Auth_GetSalt_FullMethodName})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, clock := newClockedService(t, newFakeStore())
+			ctx := withPeer(t.Context(), "10.0.0.1")
+			for range tt.burst {
+				require.NotEqual(t, codes.ResourceExhausted, status.Code(tt.call(s, ctx)))
+			}
+			require.Equal(t, codes.ResourceExhausted, status.Code(tt.call(s, ctx)))
+
+			clock.Advance(tt.interval)
+
+			assert.NotEqual(t, codes.ResourceExhausted, status.Code(tt.call(s, ctx)))
+		})
+	}
+}

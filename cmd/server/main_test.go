@@ -28,6 +28,7 @@ import (
 
 	pb "github.com/AVZotov/gophkeeper/api/gophkeeper/v1"
 	"github.com/AVZotov/gophkeeper/internal/client/vaultcrypto"
+	"github.com/AVZotov/gophkeeper/internal/clocktest"
 	"github.com/AVZotov/gophkeeper/internal/pgtest"
 	"github.com/AVZotov/gophkeeper/internal/server/auth"
 	"github.com/AVZotov/gophkeeper/internal/server/rpcserver"
@@ -53,15 +54,15 @@ func TestMain(m *testing.M) {
 	}))
 }
 
-// startServer serves the real server with the test storage on an in-memory
-// listener.
-func startServer(t *testing.T, tc tlstest.Cert) *bufconn.Listener {
+// startServer serves the real server with the test storage and the clock now
+// on an in-memory listener.
+func startServer(t *testing.T, tc tlstest.Cert, now func() time.Time) *bufconn.Listener {
 	t.Helper()
 	store, err := storage.Open(t.Context(), testDSN)
 	require.NoError(t, err)
 	t.Cleanup(store.Close)
 	log := slog.New(slog.DiscardHandler)
-	authSvc, err := auth.NewService(store, mustHexSecret(t, testSecretHex), log)
+	authSvc, err := auth.NewService(store, mustHexSecret(t, testSecretHex), log, now)
 	require.NoError(t, err)
 
 	srv := rpcserver.New(tc.TLS, authSvc, vault.NewService(store, log))
@@ -118,17 +119,10 @@ func newClientCredentials() clientCredentials {
 	}
 }
 
-// waitNextSecond sleeps past the next whole second. Token issue times have
-// whole seconds, so a token issued before the wait is older than a password
-// change after it.
-func waitNextSecond() {
-	const margin = 100 * time.Millisecond
-	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + margin)))
-}
-
 func TestAuthEndToEnd(t *testing.T) {
 	tc := tlstest.New(t)
-	client := pb.NewAuthClient(dial(t, startServer(t, tc), clientTLS(tc)))
+	clock := clocktest.New(time.Now())
+	client := pb.NewAuthClient(dial(t, startServer(t, tc, clock.Now), clientTLS(tc)))
 	ctx := t.Context()
 	login := "alice-" + rand.Text()
 	first, second, third := newClientCredentials(), newClientCredentials(), newClientCredentials()
@@ -163,7 +157,9 @@ func TestAuthEndToEnd(t *testing.T) {
 	_, err = client.ChangePassword(ctx, change)
 	assert.Equal(t, codes.Unauthenticated, status.Code(err), "no token")
 
-	waitNextSecond()
+	// Token issue times have whole seconds: the old token must be a second
+	// older than the change to be revoked.
+	clock.Advance(time.Second)
 	_, err = client.ChangePassword(withToken(ctx, oldToken), change)
 	require.NoError(t, err)
 
@@ -179,7 +175,7 @@ func TestAuthEndToEnd(t *testing.T) {
 	_, err = client.Login(ctx, pb.LoginRequest_builder{Login: login, LoginKey: first.loginKey}.Build())
 	assert.Equal(t, codes.Unauthenticated, status.Code(err), "the old login key must not work")
 
-	// The silent login right after the change, usually in the same second.
+	// The silent login right after the change, in the same second.
 	resp, err = client.Login(ctx, pb.LoginRequest_builder{Login: login, LoginKey: second.loginKey}.Build())
 	require.NoError(t, err)
 	assert.Equal(t, second.envelope, resp.GetEnvelope())
@@ -226,7 +222,7 @@ func pull(ctx context.Context, t *testing.T, client pb.VaultClient, since int64)
 
 func TestVaultEndToEnd(t *testing.T) {
 	tc := tlstest.New(t)
-	conn := dial(t, startServer(t, tc), clientTLS(tc))
+	conn := dial(t, startServer(t, tc, time.Now), clientTLS(tc))
 	ctx := signIn(t, pb.NewAuthClient(conn))
 	client := pb.NewVaultClient(conn)
 
@@ -278,7 +274,7 @@ func TestVaultEndToEnd(t *testing.T) {
 // rejected for its size.
 func TestVaultMessageTooLarge(t *testing.T) {
 	tc := tlstest.New(t)
-	conn := dial(t, startServer(t, tc), clientTLS(tc))
+	conn := dial(t, startServer(t, tc, time.Now), clientTLS(tc))
 	client := pb.NewVaultClient(conn)
 	id := uuid.New()
 	req := pb.PushRequest_builder{Id: id[:], Ciphertext: make([]byte, pb.MaxMessageSize)}.Build()
@@ -297,7 +293,7 @@ func TestVaultMessageTooLarge(t *testing.T) {
 func TestServerRejectsLargeMetadata(t *testing.T) {
 	const largeMetadata = 1 << 20
 	tc := tlstest.New(t)
-	client := pb.NewAuthClient(dial(t, startServer(t, tc), clientTLS(tc)))
+	client := pb.NewAuthClient(dial(t, startServer(t, tc, time.Now), clientTLS(tc)))
 	req := pb.GetSaltRequest_builder{Login: "alice"}.Build()
 
 	_, err := client.GetSalt(metadata.AppendToOutgoingContext(t.Context(), "x-small", "value"), req)
@@ -310,7 +306,7 @@ func TestServerRejectsLargeMetadata(t *testing.T) {
 
 func TestServerRejectsPlaintext(t *testing.T) {
 	tc := tlstest.New(t)
-	lis := startServer(t, tc)
+	lis := startServer(t, tc, time.Now)
 	req := pb.GetSaltRequest_builder{Login: "alice"}.Build()
 
 	_, err := pb.NewAuthClient(dial(t, lis, clientTLS(tc))).GetSalt(t.Context(), req)

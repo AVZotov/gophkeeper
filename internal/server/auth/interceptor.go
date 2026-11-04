@@ -49,7 +49,7 @@ type tokenClaims struct {
 // token is missing or invalid.
 func (s *Service) TapHandle(ctx context.Context, info *tap.Info) (context.Context, error) {
 	if publicMethods[info.FullMethodName] {
-		if !s.ipLimiter.allow(clientIP(ctx), time.Now()) {
+		if !s.ipLimiter.allow(clientIP(ctx), s.now()) {
 			return nil, status.Error(codes.ResourceExhausted, "too many requests, try again later")
 		}
 		return ctx, nil
@@ -58,7 +58,7 @@ func (s *Service) TapHandle(ctx context.Context, info *tap.Info) (context.Contex
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing token")
 	}
-	id, issuedAt, err := parseToken(s.tokenKey, token)
+	id, issuedAt, err := parseToken(s.tokenKey, token, s.now)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}

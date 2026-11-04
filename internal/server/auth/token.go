@@ -27,16 +27,17 @@ func issueToken(key []byte, userID int64, now time.Time) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(key)
 }
 
-// parseToken checks the token signature and expiry and returns the user ID
-// and the issue time. Only HS256 is accepted. Returns [errInvalidToken] if
-// the token does not pass the checks.
-func parseToken(key []byte, token string) (userID int64, issuedAt time.Time, err error) {
+// parseToken checks the token signature and expiry against the clock now
+// and returns the user ID and the issue time. Only HS256 is accepted. Returns
+// [errInvalidToken] if the token does not pass the checks.
+func parseToken(key []byte, token string, now func() time.Time) (userID int64, issuedAt time.Time, err error) {
 	var claims jwt.RegisteredClaims
 	_, err = jwt.ParseWithClaims(token, &claims,
 		func(*jwt.Token) (any, error) { return key, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
+		jwt.WithTimeFunc(now),
 	)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("%w: %w", errInvalidToken, err)
