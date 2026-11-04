@@ -34,11 +34,32 @@ type Result struct {
 	Pulled int
 }
 
+// ErrBadPage means the server returned a page that breaks the Pull
+// contract: an empty page with more records left, or revisions that do not grow.
+var ErrBadPage = errors.New("server returned an invalid page")
+
+// checkPage returns [ErrBadPage] if the page is empty but hasMore is set,
+// or if its revisions do not grow strictly starting after since.
+func checkPage(since int64, page []storage.Record, hasMore bool) error {
+	if len(page) == 0 && hasMore {
+		return fmt.Errorf("%w: empty page, but more records are left", ErrBadPage)
+	}
+	prev := since
+	for _, r := range page {
+		if r.Revision <= prev {
+			return fmt.Errorf("%w: revision %d after %d", ErrBadPage, r.Revision, prev)
+		}
+		prev = r.Revision
+	}
+	return nil
+}
+
 // Sync pushes the dirty records and pulls the changes from the server,
 // saving the pull position after every page. key decrypts a local change to
-// make a conflict copy. Returns the errors of [remote.Client], an error if a
-// conflict copy cannot be made and an error if the storage fails. What was
-// done before an error is kept.
+// make a conflict copy. Returns the errors of [remote.Client], [ErrBadPage]
+// if the server returns an invalid page, an error if a conflict copy cannot
+// be made and an error if the storage fails. What was done before an error
+// is kept.
 func Sync(ctx context.Context, store *storage.Store, client *remote.Client, key vaultcrypto.DataKey) (Result, error) {
 	s := syncer{store: store, client: client, key: key}
 	dirty, err := store.Dirty(ctx)
@@ -50,7 +71,8 @@ func Sync(ctx context.Context, store *storage.Store, client *remote.Client, key 
 			return s.result, err
 		}
 	}
-	return s.result, s.pull(ctx)
+	err = s.pull(ctx)
+	return s.result, err
 }
 
 type syncer struct {
@@ -140,6 +162,9 @@ func (s *syncer) pull(ctx context.Context) error {
 	for {
 		page, hasMore, err := s.client.Pull(ctx, since)
 		if err != nil {
+			return err
+		}
+		if err := checkPage(since, page, hasMore); err != nil {
 			return err
 		}
 		for _, r := range page {
