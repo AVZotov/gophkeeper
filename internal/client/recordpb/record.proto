@@ -1,0 +1,56 @@
+// Plaintext content of a GophKeeper record.
+//
+// Only the client knows this format: it encrypts a marshaled Record and sends
+// the server just the ciphertext.
+edition = "2024";
+
+package gophkeeper.record.v1;
+
+option go_package = "github.com/AVZotov/gophkeeper/internal/client/recordpb";
+
+// Builders take plain values instead of pointers.
+option features.field_presence = IMPLICIT;
+
+// Record is the content of one record: common fields and typed data.
+message Record {
+  string name = 1;
+  // Free-form text metadata: website, bank, owner, one-time codes and so on.
+  string metadata = 2;
+
+  // Record data; exactly one type is set.
+  oneof data {
+    Credentials credentials = 3;
+    Text text = 4;
+    File file = 5;
+    Card card = 6;
+  }
+}
+
+// Credentials is a login and password pair.
+message Credentials {
+  string login = 1;
+  string password = 2;
+}
+
+// Text is arbitrary text.
+message Text {
+  string content = 1;
+}
+
+// File is an arbitrary binary file.
+message File {
+  string filename = 1;
+  bytes content = 2;
+}
+
+// Card is bank card data.
+message Card {
+  // Digits only.
+  string number = 1;
+  string holder = 2;
+  // 1-12.
+  int32 expiry_month = 3;
+  // Four digits, e.g. 2029.
+  int32 expiry_year = 4;
+  string cvv = 5;
+}
